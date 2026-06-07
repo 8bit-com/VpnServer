@@ -24,6 +24,33 @@ public class TunDevice {
 
         System.out.println("tun0 opened");
 
+        new Thread(() -> {
+            try {
+                while (true) {
+
+                    Thread.sleep(5000);
+
+                    byte[] data = "TEST".getBytes();
+
+                    for (InetSocketAddress peer : udpPeers.getAll()) {
+
+                        socket.send(
+                                new DatagramPacket(
+                                        data,
+                                        data.length,
+                                        peer.getAddress(),
+                                        peer.getPort()
+                                )
+                        );
+
+                        System.out.println("sent test packet");
+                    }
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
+
         readPackets(fd, socket);
     }
 
