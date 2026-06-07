@@ -1,0 +1,82 @@
+package org.example.vpnserver;
+
+import org.springframework.stereotype.Service;
+
+@Service
+public class TunDevice {
+
+    private static final int O_RDWR = 2;
+
+    private static final short IFF_TUN = 0x0001;
+
+    private static final short IFF_NO_PI = 0x1000;
+
+    private static final long TUNSETIFF = 0x400454caL;
+
+    public void start() {
+
+        int fd = openTun();
+
+        System.out.println("tun0 opened");
+
+        readPackets(fd);
+    }
+
+    private int openTun() {
+
+        int fd =
+                LibC.INSTANCE.open(
+                        "/dev/net/tun",
+                        O_RDWR
+                );
+
+        IfReq ifr = new IfReq();
+
+        System.arraycopy(
+                "tun0".getBytes(),
+                0,
+                ifr.ifr_name,
+                0,
+                4
+        );
+
+        ifr.ifr_flags =
+                (short) (IFF_TUN | IFF_NO_PI);
+
+        ifr.write();
+
+        int result =
+                LibC.INSTANCE.ioctl(
+                        fd,
+                        TUNSETIFF,
+                        ifr
+                );
+
+        if (result < 0) {
+            throw new RuntimeException("ioctl failed");
+        }
+
+        return fd;
+    }
+
+    private void readPackets(int fd) {
+
+        byte[] buffer = new byte[2000];
+
+        while (true) {
+
+            int len =
+                    LibC.INSTANCE.read(
+                            fd,
+                            buffer,
+                            buffer.length
+                    );
+
+            if (len > 0) {
+                System.out.println(
+                        "packet: " + len + " bytes"
+                );
+            }
+        }
+    }
+}

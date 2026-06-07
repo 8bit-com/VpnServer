@@ -1,5 +1,6 @@
 package org.example.vpnserver;
 
+import lombok.RequiredArgsConstructor;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
@@ -8,42 +9,13 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 
 @Service
+@RequiredArgsConstructor
 public class Server {
 
+    private final TunDevice tunDevice;
+
     @EventListener(ApplicationReadyEvent.class)
-    public void run() throws Exception {
-
-        DatagramSocket socket = new DatagramSocket(51888);
-
-        System.out.println("SERVER STARTED");
-
-        while (true) {
-
-            DatagramPacket packet =
-                    new DatagramPacket(
-                            new byte[65535],
-                            65535
-                    );
-
-            socket.receive(packet);
-
-            System.out.println(
-                    "FROM " +
-                            packet.getAddress().getHostAddress() +
-                            ":" +
-                            packet.getPort() +
-                            " SIZE=" +
-                            packet.getLength()
-            );
-
-            socket.send(
-                    new DatagramPacket(
-                            packet.getData(),
-                            packet.getLength(),
-                            packet.getAddress(),
-                            packet.getPort()
-                    )
-            );
-        }
+    public void run() {
+        tunDevice.start();
     }
 }
