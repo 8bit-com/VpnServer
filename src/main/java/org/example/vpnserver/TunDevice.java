@@ -24,33 +24,6 @@ public class TunDevice {
 
         System.out.println("tun0 opened");
 
-        new Thread(() -> {
-            try {
-                while (true) {
-
-                    Thread.sleep(5000);
-
-                    byte[] data = "TEST".getBytes();
-
-                    for (InetSocketAddress peer : udpPeers.getAll()) {
-
-                        socket.send(
-                                new DatagramPacket(
-                                        data,
-                                        data.length,
-                                        peer.getAddress(),
-                                        peer.getPort()
-                                )
-                        );
-
-                        System.out.println("sent test packet");
-                    }
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }).start();
-
         readPackets(fd, socket);
     }
 
@@ -104,25 +77,31 @@ public class TunDevice {
                             buffer.length
                     );
 
-            if (len > 0) {
-
-                for (InetSocketAddress peer : udpPeers.getAll()) {
-                    try {
-                        socket.send(
-                                new DatagramPacket(
-                                        buffer,
-                                        len,
-                                        peer.getAddress(),
-                                        peer.getPort()
-                                )
-                        );
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
-                }
-
-                System.out.println("tun -> udp: " + len + " bytes");
+            if (len <= 0) {
+                continue;
             }
+
+            for (InetSocketAddress peer : udpPeers.getAll()) {
+
+                try {
+
+                    socket.send(
+                            new DatagramPacket(
+                                    buffer,
+                                    len,
+                                    peer.getAddress(),
+                                    peer.getPort()
+                            )
+                    );
+
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+
+            System.out.println(
+                    "tun -> client : " + len + " bytes"
+            );
         }
     }
 }
