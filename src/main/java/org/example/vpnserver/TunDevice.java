@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class TunDevice {
 
     private static final int O_RDWR = 2;
-    private static final int LOG_EVERY_PACKETS = 50;
+    private static final int LOG_EVERY_PACKETS = 1;
     private static final short IFF_TUN = 0x0001;
     private static final short IFF_NO_PI = 0x1000;
     private static final long TUNSETIFF = 0x400454caL;
@@ -104,22 +104,6 @@ public class TunDevice {
             return;
         }
 
-        System.out.println("tun -> client packets=" + value + " last=" + len + " bytes " + ipInfo(data, len));
-    }
-
-    private String ipInfo(byte[] data, int len) {
-
-        if (len < 20 || (data[0] & 0xF0) != 0x40) {
-            return "";
-        }
-
-        return ip(data, 12) + " -> " + ip(data, 16);
-    }
-
-    private String ip(byte[] data, int offset) {
-        return (data[offset] & 0xFF) + "." +
-                (data[offset + 1] & 0xFF) + "." +
-                (data[offset + 2] & 0xFF) + "." +
-                (data[offset + 3] & 0xFF);
+        System.out.println("tun -> client packets=" + value + " last=" + len + " bytes " + PacketInfo.info(data, len));
     }
 }
