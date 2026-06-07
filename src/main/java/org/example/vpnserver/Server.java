@@ -15,35 +15,40 @@ public class Server {
 
         DatagramSocket socket = new DatagramSocket(51888);
 
-        System.out.println("VPN SERVER STARTED");
+        byte[] buffer = new byte[65535];
 
         while (true) {
-
-            byte[] buffer = new byte[65535];
 
             DatagramPacket packet =
                     new DatagramPacket(buffer, buffer.length);
 
             socket.receive(packet);
 
-            System.out.println(
-                    "RECV "
-                            + packet.getAddress()
-                            + ":"
-                            + packet.getPort()
-                            + " len="
-                            + packet.getLength()
+            String message = new String(
+                    packet.getData(),
+                    0,
+                    packet.getLength()
             );
 
-            DatagramPacket response =
+            System.out.println(
+                    packet.getAddress() +
+                            ":" +
+                            packet.getPort() +
+                            " -> " +
+                            message
+            );
+
+            byte[] response =
+                    ("PONG: " + message).getBytes();
+
+            socket.send(
                     new DatagramPacket(
-                            packet.getData(),
-                            packet.getLength(),
+                            response,
+                            response.length,
                             packet.getAddress(),
                             packet.getPort()
-                    );
-
-            socket.send(response);
+                    )
+            );
         }
     }
 }
