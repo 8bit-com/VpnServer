@@ -6,17 +6,20 @@ import org.springframework.stereotype.Service;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 @RequiredArgsConstructor
 public class TunDevice {
 
     private static final int O_RDWR = 2;
+    private static final int LOG_EVERY_PACKETS = 50;
     private static final short IFF_TUN = 0x0001;
     private static final short IFF_NO_PI = 0x1000;
     private static final long TUNSETIFF = 0x400454caL;
 
     private int fd;
+    private final AtomicLong tunToClientCounter = new AtomicLong();
     private final UdpPeers udpPeers;
 
     public void start(DatagramSocket socket) {
@@ -36,54 +39,28 @@ public class TunDevice {
         return fd;
     }
 
-    public void writePacket(
-            int fd,
-            byte[] data
-    ) {
+    public void writePacket(int fd, byte[] data) {
 
-        int written =
-                LibC.INSTANCE.write(
-                        fd,
-                        data,
-                        data.length
-                );
+        int written = LibC.INSTANCE.write(fd, data, data.length);
 
         if (written < 0) {
-            throw new RuntimeException(
-                    "tun write failed"
-            );
+            throw new RuntimeException("tun write failed");
         }
     }
 
     private int openTun() {
 
-        int fd =
-                LibC.INSTANCE.open(
-                        "/dev/net/tun",
-                        O_RDWR
-                );
+        int fd = LibC.INSTANCE.open("/dev/net/tun", O_RDWR);
 
         IfReq ifr = new IfReq();
 
-        System.arraycopy(
-                "tun0".getBytes(),
-                0,
-                ifr.ifr_name,
-                0,
-                4
-        );
+        System.arraycopy("tun0".getBytes(), 0, ifr.ifr_name, 0, 4);
 
-        ifr.ifr_flags =
-                (short) (IFF_TUN | IFF_NO_PI);
+        ifr.ifr_flags = (short) (IFF_TUN | IFF_NO_PI);
 
         ifr.write();
 
-        int result =
-                LibC.INSTANCE.ioctl(
-                        fd,
-                        TUNSETIFF,
-                        ifr
-                );
+        int result = LibC.INSTANCE.ioctl(fd, TUNSETIFF, ifr);
 
         if (result < 0) {
             throw new RuntimeException("ioctl failed");
@@ -98,12 +75,7 @@ public class TunDevice {
 
         while (true) {
 
-            int len =
-                    LibC.INSTANCE.read(
-                            fd,
-                            buffer,
-                            buffer.length
-                    );
+            int len = LibC.INSTANCE.read(fd, buffer, buffer.length);
 
             if (len <= 0) {
                 continue;
@@ -113,22 +85,26 @@ public class TunDevice {
 
                 try {
 
-                    socket.send(
-                            new DatagramPacket(
-                                    buffer,
-                                    len,
-                                    peer.getAddress(),
-                                    peer.getPort()
-                            )
-                    );
+                    socket.send(new DatagramPacket(buffer, len, peer.getAddress(), peer.getPort()));
 
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
             }
 
-            System.out.println("tun -> client : " + len + " bytes " + ipInfo(buffer, len));
+            logEvery(buffer, len);
         }
+    }
+
+    private void logEvery(byte[] data, int len) {
+
+        long value = tunToClientCounter.incrementAndGet();
+
+        if (value % LOG_EVERY_PACKETS != 0) {
+            return;
+        }
+
+        System.out.println("tun -> client packets=" + value + " last=" + len + " bytes " + ipInfo(data, len));
     }
 
     private String ipInfo(byte[] data, int len) {
