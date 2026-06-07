@@ -94,7 +94,7 @@ public class TunDevice {
 
     public void readPackets(DatagramSocket socket) {
 
-        byte[] buffer = new byte[2000];
+        byte[] buffer = new byte[65535];
 
         while (true) {
 
@@ -127,9 +127,23 @@ public class TunDevice {
                 }
             }
 
-            System.out.println(
-                    "tun -> client : " + len + " bytes"
-            );
+            System.out.println("tun -> client : " + len + " bytes " + ipInfo(buffer, len));
         }
+    }
+
+    private String ipInfo(byte[] data, int len) {
+
+        if (len < 20 || (data[0] & 0xF0) != 0x40) {
+            return "";
+        }
+
+        return ip(data, 12) + " -> " + ip(data, 16);
+    }
+
+    private String ip(byte[] data, int offset) {
+        return (data[offset] & 0xFF) + "." +
+                (data[offset + 1] & 0xFF) + "." +
+                (data[offset + 2] & 0xFF) + "." +
+                (data[offset + 3] & 0xFF);
     }
 }
