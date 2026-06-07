@@ -5,6 +5,8 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
@@ -14,6 +16,9 @@ import java.net.InetSocketAddress;
 public class Server {
 
     private static final int PORT = 51888;
+    private static final String TUN_NAME = "tun0";
+    private static final String TUN_IP = "10.0.0.1/24";
+    private static final String VPN_NETWORK = "10.0.0.0/24";
 
     private final UdpPeers udpPeers;
     private final TunDevice tunDevice;
@@ -26,6 +31,71 @@ public class Server {
         new Thread(() -> listenClients(socket), "udp-listener").start();
 
         tunDevice.start(socket);
+
+        configureLinuxVpnNetwork();
+    }
+
+    private void configureLinuxVpnNetwork() throws Exception {
+
+        String externalInterface = getExternalInterface();
+
+        runCommand("ip", "addr", "flush", "dev", TUN_NAME);
+        runCommand("ip", "addr", "add", TUN_IP, "dev", TUN_NAME);
+        runCommand("ip", "link", "set", TUN_NAME, "up");
+
+        runCommand("sysctl", "-w", "net.ipv4.ip_forward=1");
+
+        runCommandIgnoreError(
+                "iptables",
+                "-t",
+                "nat",
+                "-D",
+                "POSTROUTING",
+                "-s",
+                VPN_NETWORK,
+                "-o",
+                externalInterface,
+                "-j",
+                "MASQUERADE"
+        );
+
+        runCommand(
+                "iptables",
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-s",
+                VPN_NETWORK,
+                "-o",
+                externalInterface,
+                "-j",
+                "MASQUERADE"
+        );
+
+        System.out.println("LINUX VPN NETWORK CONFIGURED: " + TUN_NAME + " " + TUN_IP + ", NAT via " + externalInterface);
+    }
+
+    private String getExternalInterface() throws Exception {
+
+        Process process =
+                new ProcessBuilder("sh", "-c", "ip route get 8.8.8.8 | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p' | head -n 1")
+                        .redirectErrorStream(true)
+                        .start();
+
+        String externalInterface;
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            externalInterface = reader.readLine();
+        }
+
+        int code = process.waitFor();
+
+        if (code != 0 || externalInterface == null || externalInterface.trim().isEmpty()) {
+            throw new RuntimeException("Cannot detect external interface");
+        }
+
+        return externalInterface.trim();
     }
 
     private void listenClients(DatagramSocket socket) {
@@ -86,6 +156,33 @@ public class Server {
             } catch (Exception e) {
                 e.printStackTrace();
             }
+        }
+    }
+
+    private void runCommand(String... command) throws Exception {
+
+        Process process =
+                new ProcessBuilder(command)
+                        .redirectErrorStream(true)
+                        .start();
+
+        int code = process.waitFor();
+
+        if (code != 0) {
+            throw new RuntimeException("Command failed, code=" + code + ", command=" + String.join(" ", command));
+        }
+    }
+
+    private void runCommandIgnoreError(String... command) {
+
+        try {
+            Process process =
+                    new ProcessBuilder(command)
+                            .redirectErrorStream(true)
+                            .start();
+
+            process.waitFor();
+        } catch (Exception ignored) {
         }
     }
 }
