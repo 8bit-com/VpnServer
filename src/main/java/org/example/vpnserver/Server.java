@@ -15,36 +15,31 @@ public class Server {
 
         DatagramSocket socket = new DatagramSocket(51888);
 
-        byte[] buffer = new byte[65535];
+        System.out.println("SERVER STARTED");
 
         while (true) {
 
             DatagramPacket packet =
-                    new DatagramPacket(buffer, buffer.length);
+                    new DatagramPacket(
+                            new byte[65535],
+                            65535
+                    );
 
             socket.receive(packet);
 
-            String message = new String(
-                    packet.getData(),
-                    0,
-                    packet.getLength()
-            );
-
             System.out.println(
-                    packet.getAddress() +
+                    "FROM " +
+                            packet.getAddress().getHostAddress() +
                             ":" +
                             packet.getPort() +
-                            " -> " +
-                            message
+                            " SIZE=" +
+                            packet.getLength()
             );
-
-            byte[] response =
-                    ("PONG: " + message).getBytes();
 
             socket.send(
                     new DatagramPacket(
-                            response,
-                            response.length,
+                            packet.getData(),
+                            packet.getLength(),
                             packet.getAddress(),
                             packet.getPort()
                     )
