@@ -14,4 +14,6 @@ public interface LibC extends Library {
     int ioctl(int fd, long request, Structure arg);
 
     int read(int fd, byte[] buffer, int count);
+
+    int write(int fd, byte[] buffer, int count);
 }

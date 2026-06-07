@@ -30,12 +30,15 @@ public class Server {
 
     private void listenClients(DatagramSocket socket) {
 
-        byte[] buffer = new byte[65535];
-
         while (true) {
+
             try {
+
                 DatagramPacket packet =
-                        new DatagramPacket(buffer, buffer.length);
+                        new DatagramPacket(
+                                new byte[65535],
+                                65535
+                        );
 
                 socket.receive(packet);
 
@@ -53,6 +56,31 @@ public class Server {
                                 packet.getPort() +
                                 " size=" +
                                 packet.getLength()
+                );
+
+                if (packet.getLength() == 5) {
+                    continue;
+                }
+
+                byte[] data = new byte[packet.getLength()];
+
+                System.arraycopy(
+                        packet.getData(),
+                        0,
+                        data,
+                        0,
+                        packet.getLength()
+                );
+
+                tunDevice.writePacket(
+                        tunDevice.getFd(),
+                        data
+                );
+
+                System.out.println(
+                        "udp -> tun : " +
+                                data.length +
+                                " bytes"
                 );
 
             } catch (Exception e) {

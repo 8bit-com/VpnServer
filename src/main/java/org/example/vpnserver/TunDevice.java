@@ -16,15 +16,39 @@ public class TunDevice {
     private static final short IFF_NO_PI = 0x1000;
     private static final long TUNSETIFF = 0x400454caL;
 
+    private int fd;
     private final UdpPeers udpPeers;
 
     public void start(DatagramSocket socket) {
 
-        int fd = openTun();
+        fd = openTun();
 
         System.out.println("tun0 opened");
 
         readPackets(fd, socket);
+    }
+
+    public int getFd() {
+        return fd;
+    }
+
+    public void writePacket(
+            int fd,
+            byte[] data
+    ) {
+
+        int written =
+                LibC.INSTANCE.write(
+                        fd,
+                        data,
+                        data.length
+                );
+
+        if (written < 0) {
+            throw new RuntimeException(
+                    "tun write failed"
+            );
+        }
     }
 
     private int openTun() {
