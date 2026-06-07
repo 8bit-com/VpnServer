@@ -1,25 +1,30 @@
 package org.example.vpnserver;
 
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetSocketAddress;
+
 @Service
+@RequiredArgsConstructor
 public class TunDevice {
 
     private static final int O_RDWR = 2;
-
     private static final short IFF_TUN = 0x0001;
-
     private static final short IFF_NO_PI = 0x1000;
-
     private static final long TUNSETIFF = 0x400454caL;
 
-    public void start() {
+    private final UdpPeers udpPeers;
+
+    public void start(DatagramSocket socket) {
 
         int fd = openTun();
 
         System.out.println("tun0 opened");
 
-        readPackets(fd);
+        readPackets(fd, socket);
     }
 
     private int openTun() {
@@ -59,7 +64,7 @@ public class TunDevice {
         return fd;
     }
 
-    private void readPackets(int fd) {
+    private void readPackets(int fd, DatagramSocket socket) {
 
         byte[] buffer = new byte[2000];
 
@@ -73,9 +78,23 @@ public class TunDevice {
                     );
 
             if (len > 0) {
-                System.out.println(
-                        "packet: " + len + " bytes"
-                );
+
+                for (InetSocketAddress peer : udpPeers.getAll()) {
+                    try {
+                        socket.send(
+                                new DatagramPacket(
+                                        buffer,
+                                        len,
+                                        peer.getAddress(),
+                                        peer.getPort()
+                                )
+                        );
+                    } catch (Exception e) {
+                        e.printStackTrace();
+                    }
+                }
+
+                System.out.println("tun -> udp: " + len + " bytes");
             }
         }
     }
