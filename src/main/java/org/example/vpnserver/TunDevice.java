@@ -21,11 +21,15 @@ public class TunDevice {
 
     public void start(DatagramSocket socket) {
 
+        open();
+        readPackets(socket);
+    }
+
+    public void open() {
+
         fd = openTun();
 
         System.out.println("tun0 opened");
-
-        readPackets(fd, socket);
     }
 
     public int getFd() {
@@ -88,7 +92,7 @@ public class TunDevice {
         return fd;
     }
 
-    private void readPackets(int fd, DatagramSocket socket) {
+    public void readPackets(DatagramSocket socket) {
 
         byte[] buffer = new byte[2000];
 
