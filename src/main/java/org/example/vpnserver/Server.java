@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class Server {
 
     private static final int PORT = 51888;
-    private static final int LOG_EVERY_PACKETS = 50;
+    private static final int LOG_EVERY_PACKETS = 1;
     private static final int MTU = 1200;
     private static final int TCP_MSS = 1160;
     private static final String TUN_NAME = "tun0";
@@ -135,23 +135,7 @@ public class Server {
             return;
         }
 
-        System.out.println(direction + " packets=" + value + " last=" + data.length + " bytes " + ipInfo(data));
-    }
-
-    private String ipInfo(byte[] data) {
-
-        if (data.length < 20 || (data[0] & 0xF0) != 0x40) {
-            return "";
-        }
-
-        return ip(data, 12) + " -> " + ip(data, 16);
-    }
-
-    private String ip(byte[] data, int offset) {
-        return (data[offset] & 0xFF) + "." +
-                (data[offset + 1] & 0xFF) + "." +
-                (data[offset + 2] & 0xFF) + "." +
-                (data[offset + 3] & 0xFF);
+        System.out.println(direction + " packets=" + value + " last=" + data.length + " bytes " + PacketInfo.info(data));
     }
 
     private void runCommand(String... command) throws Exception {
