@@ -47,35 +47,36 @@ public class Server {
 
         runCommand("sysctl", "-w", "net.ipv4.ip_forward=1");
 
+        deleteForwardRules(externalInterface);
+        addForwardRules(externalInterface);
+
         runCommandIgnoreError(
-                "iptables",
-                "-t",
-                "nat",
-                "-D",
-                "POSTROUTING",
-                "-s",
-                VPN_NETWORK,
-                "-o",
-                externalInterface,
-                "-j",
-                "MASQUERADE"
+                "iptables", "-t", "nat", "-D", "POSTROUTING",
+                "-s", VPN_NETWORK,
+                "-o", externalInterface,
+                "-j", "MASQUERADE"
         );
 
         runCommand(
-                "iptables",
-                "-t",
-                "nat",
-                "-A",
-                "POSTROUTING",
-                "-s",
-                VPN_NETWORK,
-                "-o",
-                externalInterface,
-                "-j",
-                "MASQUERADE"
+                "iptables", "-t", "nat", "-A", "POSTROUTING",
+                "-s", VPN_NETWORK,
+                "-o", externalInterface,
+                "-j", "MASQUERADE"
         );
 
         System.out.println("LINUX VPN NETWORK CONFIGURED: " + TUN_NAME + " " + TUN_IP + ", NAT via " + externalInterface);
+    }
+
+    private void deleteForwardRules(String externalInterface) {
+
+        runCommandIgnoreError("iptables", "-D", "FORWARD", "-i", TUN_NAME, "-o", externalInterface, "-j", "ACCEPT");
+        runCommandIgnoreError("iptables", "-D", "FORWARD", "-i", externalInterface, "-o", TUN_NAME, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT");
+    }
+
+    private void addForwardRules(String externalInterface) throws Exception {
+
+        runCommand("iptables", "-A", "FORWARD", "-i", TUN_NAME, "-o", externalInterface, "-j", "ACCEPT");
+        runCommand("iptables", "-A", "FORWARD", "-i", externalInterface, "-o", TUN_NAME, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT");
     }
 
     private String getExternalInterface() throws Exception {
@@ -106,54 +107,24 @@ public class Server {
 
             try {
 
-                DatagramPacket packet =
-                        new DatagramPacket(
-                                new byte[65535],
-                                65535
-                        );
+                DatagramPacket packet = new DatagramPacket(new byte[65535], 65535);
 
                 socket.receive(packet);
 
-                udpPeers.add(
-                        new InetSocketAddress(
-                                packet.getAddress(),
-                                packet.getPort()
-                        )
-                );
+                udpPeers.add(new InetSocketAddress(packet.getAddress(), packet.getPort()));
 
-                System.out.println(
-                        "udp from " +
-                                packet.getAddress().getHostAddress() +
-                                ":" +
-                                packet.getPort() +
-                                " size=" +
-                                packet.getLength()
-                );
+                System.out.println("udp from " + packet.getAddress().getHostAddress() + ":" + packet.getPort() + " size=" + packet.getLength());
 
                 if (packet.getLength() == 5) {
                     continue;
                 }
 
                 byte[] data = new byte[packet.getLength()];
+                System.arraycopy(packet.getData(), 0, data, 0, packet.getLength());
 
-                System.arraycopy(
-                        packet.getData(),
-                        0,
-                        data,
-                        0,
-                        packet.getLength()
-                );
+                tunDevice.writePacket(tunDevice.getFd(), data);
 
-                tunDevice.writePacket(
-                        tunDevice.getFd(),
-                        data
-                );
-
-                System.out.println(
-                        "udp -> tun : " +
-                                data.length +
-                                " bytes"
-                );
+                System.out.println("udp -> tun : " + data.length + " bytes " + ipInfo(data));
 
             } catch (Exception e) {
                 e.printStackTrace();
@@ -161,12 +132,25 @@ public class Server {
         }
     }
 
+    private String ipInfo(byte[] data) {
+
+        if (data.length < 20 || (data[0] & 0xF0) != 0x40) {
+            return "";
+        }
+
+        return ip(data, 12) + " -> " + ip(data, 16);
+    }
+
+    private String ip(byte[] data, int offset) {
+        return (data[offset] & 0xFF) + "." +
+                (data[offset + 1] & 0xFF) + "." +
+                (data[offset + 2] & 0xFF) + "." +
+                (data[offset + 3] & 0xFF);
+    }
+
     private void runCommand(String... command) throws Exception {
 
-        Process process =
-                new ProcessBuilder(command)
-                        .redirectErrorStream(true)
-                        .start();
+        Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
 
         int code = process.waitFor();
 
@@ -178,11 +162,7 @@ public class Server {
     private void runCommandIgnoreError(String... command) {
 
         try {
-            Process process =
-                    new ProcessBuilder(command)
-                            .redirectErrorStream(true)
-                            .start();
-
+            Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
             process.waitFor();
         } catch (Exception ignored) {
         }
