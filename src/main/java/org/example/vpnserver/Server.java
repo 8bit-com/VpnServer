@@ -30,9 +30,11 @@ public class Server {
 
         new Thread(() -> listenClients(socket), "udp-listener").start();
 
-        tunDevice.start(socket);
+        tunDevice.open();
 
         configureLinuxVpnNetwork();
+
+        new Thread(() -> tunDevice.readPackets(socket), "tun-reader").start();
     }
 
     private void configureLinuxVpnNetwork() throws Exception {
