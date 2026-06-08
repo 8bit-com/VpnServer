@@ -3,21 +3,30 @@ package org.example.vpnserver;
 import org.springframework.stereotype.Service;
 
 import java.net.InetSocketAddress;
+import java.util.Collections;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class UdpPeers {
 
-    private final Set<InetSocketAddress> peers =
-            ConcurrentHashMap.newKeySet();
+    private volatile InetSocketAddress currentPeer;
 
     public void add(InetSocketAddress address) {
-        peers.add(address);
-        System.out.println("peer added: " + address);
+
+        if (!address.equals(currentPeer)) {
+            currentPeer = address;
+            System.out.println("peer set: " + address);
+        }
     }
 
     public Set<InetSocketAddress> getAll() {
-        return peers;
+
+        InetSocketAddress peer = currentPeer;
+
+        if (peer == null) {
+            return Collections.emptySet();
+        }
+
+        return Collections.singleton(peer);
     }
 }
