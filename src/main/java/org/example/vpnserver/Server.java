@@ -83,11 +83,17 @@ public class Server {
 
         System.out.println("HTTP TX " + packet.length + " bytes " + printable(packet));
 
+        byte[] icmpReply = buildIcmpEchoReplyIfGatewayPing(packet);
+        if (icmpReply != null) {
+            offerToClient(icmpReply);
+            return ResponseEntity.noContent().build();
+        }
+
         if (tunEnabled) {
             tunDevice.writePacket(packet);
             logEvery(httpToTunCounter, "http -> tun", packet);
         } else {
-            toClient.offer(("ECHO_FROM_SERVER: " + printable(packet)).getBytes(StandardCharsets.UTF_8));
+            offerToClient(("ECHO_FROM_SERVER: " + printable(packet)).getBytes(StandardCharsets.UTF_8));
         }
 
         return ResponseEntity.noContent().build();
@@ -112,17 +118,89 @@ public class Server {
                     continue;
                 }
 
-                if (!toClient.offer(packet)) {
-                    toClient.poll();
-                    toClient.offer(packet);
-                }
-
+                offerToClient(packet);
                 logEvery(tunToHttpCounter, "tun -> http", packet);
 
             } catch (Exception e) {
                 e.printStackTrace();
             }
         }
+    }
+
+    private void offerToClient(byte[] packet) {
+        if (!toClient.offer(packet)) {
+            toClient.poll();
+            toClient.offer(packet);
+        }
+    }
+
+    private byte[] buildIcmpEchoReplyIfGatewayPing(byte[] packet) {
+        if (packet.length < 28) {
+            return null;
+        }
+        int version = (packet[0] >> 4) & 0x0f;
+        int ihl = (packet[0] & 0x0f) * 4;
+        if (version != 4 || ihl < 20 || packet.length < ihl + 8) {
+            return null;
+        }
+        int protocol = packet[9] & 0xff;
+        if (protocol != 1) {
+            return null;
+        }
+        String dst = ip(packet, 16);
+        if (!gatewayIp().equals(dst)) {
+            return null;
+        }
+        int icmpOffset = ihl;
+        int icmpType = packet[icmpOffset] & 0xff;
+        if (icmpType != 8) {
+            return null;
+        }
+
+        byte[] reply = Arrays.copyOf(packet, packet.length);
+
+        for (int i = 0; i < 4; i++) {
+            reply[12 + i] = packet[16 + i];
+            reply[16 + i] = packet[12 + i];
+        }
+
+        reply[8] = 64;
+        reply[10] = 0;
+        reply[11] = 0;
+        int ipChecksum = checksum(reply, 0, ihl);
+        reply[10] = (byte) (ipChecksum >> 8);
+        reply[11] = (byte) ipChecksum;
+
+        reply[icmpOffset] = 0;
+        reply[icmpOffset + 2] = 0;
+        reply[icmpOffset + 3] = 0;
+        int icmpChecksum = checksum(reply, icmpOffset, reply.length - icmpOffset);
+        reply[icmpOffset + 2] = (byte) (icmpChecksum >> 8);
+        reply[icmpOffset + 3] = (byte) icmpChecksum;
+
+        System.out.println("ICMP ECHO REPLY " + ip(reply, 12) + " -> " + ip(reply, 16));
+        return reply;
+    }
+
+    private int checksum(byte[] data, int offset, int length) {
+        long sum = 0;
+        int i = offset;
+        while (length > 1) {
+            sum += ((data[i] & 0xff) << 8) | (data[i + 1] & 0xff);
+            i += 2;
+            length -= 2;
+        }
+        if (length > 0) {
+            sum += (data[i] & 0xff) << 8;
+        }
+        while ((sum >> 16) != 0) {
+            sum = (sum & 0xffff) + (sum >> 16);
+        }
+        return (int) (~sum) & 0xffff;
+    }
+
+    private String gatewayIp() {
+        return tunAddress.contains("/") ? tunAddress.substring(0, tunAddress.indexOf('/')) : tunAddress;
     }
 
     private void configureLinuxVpnNetwork() throws Exception {
@@ -198,6 +276,10 @@ public class Server {
         }
 
         return PacketInfo.info(data);
+    }
+
+    private String ip(byte[] data, int offset) {
+        return (data[offset] & 0xff) + "." + (data[offset + 1] & 0xff) + "." + (data[offset + 2] & 0xff) + "." + (data[offset + 3] & 0xff);
     }
 
     private void runCommand(String... command) throws Exception {
