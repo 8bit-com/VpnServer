@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
 @RequiredArgsConstructor
 public class Server {
 
-    private static final int PORT = 443;
+    private static final int PORT = 51888;
     private static final int LOG_EVERY_PACKETS = 1;
     private static final int MTU = 1200;
     private static final int TCP_MSS = 1160;
