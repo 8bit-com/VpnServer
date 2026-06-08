@@ -6,11 +6,14 @@ import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.InputStreamReader;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
-import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 @RequiredArgsConstructor
@@ -23,23 +26,109 @@ public class Server {
     private static final String TUN_NAME = "tun0";
     private static final String TUN_IP = "10.0.0.1/24";
     private static final String VPN_NETWORK = "10.0.0.0/24";
+    private static final int MAX_PACKET_SIZE = 65535;
 
-    private final AtomicLong udpToTunCounter = new AtomicLong();
-    private final UdpPeers udpPeers;
+    private final AtomicLong tcpToTunCounter = new AtomicLong();
+    private final AtomicLong tunToTcpCounter = new AtomicLong();
+    private final AtomicReference<DataOutputStream> activeClientOut = new AtomicReference<>();
     private final TunDevice tunDevice;
 
     @EventListener(ApplicationReadyEvent.class)
     public void run() throws Exception {
 
-        DatagramSocket socket = new DatagramSocket(PORT);
-
-        new Thread(() -> listenClients(socket), "udp-listener").start();
-
         tunDevice.open();
-
         configureLinuxVpnNetwork();
 
-        new Thread(() -> tunDevice.readPackets(socket), "tun-reader").start();
+        new Thread(this::readTunAndSendToTcp, "tun-to-tcp").start();
+        listenTcpClients();
+    }
+
+    private void listenTcpClients() throws Exception {
+
+        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
+            System.out.println("TCP VPN SERVER LISTENING ON PORT " + PORT);
+
+            while (true) {
+                Socket socket = serverSocket.accept();
+                socket.setTcpNoDelay(true);
+                socket.setKeepAlive(true);
+
+                System.out.println("tcp client connected: " + socket.getRemoteSocketAddress());
+
+                new Thread(() -> handleTcpClient(socket), "tcp-client").start();
+            }
+        }
+    }
+
+    private void handleTcpClient(Socket socket) {
+
+        try (socket;
+             DataInputStream in = new DataInputStream(socket.getInputStream());
+             DataOutputStream out = new DataOutputStream(socket.getOutputStream())) {
+
+            activeClientOut.set(out);
+
+            while (true) {
+                int len = in.readInt();
+
+                if (len <= 0 || len > MAX_PACKET_SIZE) {
+                    throw new RuntimeException("bad tcp frame length: " + len);
+                }
+
+                byte[] data = in.readNBytes(len);
+
+                if (data.length != len) {
+                    throw new RuntimeException("tcp frame truncated: " + data.length + "/" + len);
+                }
+
+                tunDevice.writePacket(tunDevice.getFd(), data);
+
+                logEvery(tcpToTunCounter, "tcp -> tun", data);
+            }
+
+        } catch (Exception e) {
+            System.out.println("tcp client disconnected: " + socket.getRemoteSocketAddress() + " error=" + e.getMessage());
+        } finally {
+            activeClientOut.compareAndSet(getOutputStream(socket), null);
+        }
+    }
+
+    private DataOutputStream getOutputStream(Socket socket) {
+        return null;
+    }
+
+    private void readTunAndSendToTcp() {
+
+        byte[] buffer = new byte[MAX_PACKET_SIZE];
+
+        while (true) {
+            try {
+                int len = LibC.INSTANCE.read(tunDevice.getFd(), buffer, buffer.length);
+
+                if (len <= 0) {
+                    continue;
+                }
+
+                byte[] data = Arrays.copyOf(buffer, len);
+
+                DataOutputStream out = activeClientOut.get();
+
+                if (out == null) {
+                    continue;
+                }
+
+                synchronized (out) {
+                    out.writeInt(data.length);
+                    out.write(data);
+                    out.flush();
+                }
+
+                logEvery(tunToTcpCounter, "tun -> tcp", data);
+
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
     }
 
     private void configureLinuxVpnNetwork() throws Exception {
@@ -95,36 +184,6 @@ public class Server {
         }
 
         return externalInterface.trim();
-    }
-
-    private void listenClients(DatagramSocket socket) {
-
-        while (true) {
-
-            try {
-
-                DatagramPacket packet = new DatagramPacket(new byte[65535], 65535);
-
-                socket.receive(packet);
-
-                udpPeers.add(new InetSocketAddress(packet.getAddress(), packet.getPort()));
-
-                if (packet.getLength() == 5) {
-                    System.out.println("udp register from " + packet.getAddress().getHostAddress() + ":" + packet.getPort());
-                    continue;
-                }
-
-                byte[] data = new byte[packet.getLength()];
-                System.arraycopy(packet.getData(), 0, data, 0, packet.getLength());
-
-                tunDevice.writePacket(tunDevice.getFd(), data);
-
-                logEvery(udpToTunCounter, "udp -> tun", data);
-
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
     }
 
     private void logEvery(AtomicLong counter, String direction, byte[] data) {
