@@ -1,9 +1,8 @@
 package org.example.vpnserver;
 
-
 import com.sun.jna.Library;
-import com.sun.jna.Structure;
 import com.sun.jna.Native;
+import com.sun.jna.Structure;
 
 public interface LibC extends Library {
 
@@ -16,4 +15,8 @@ public interface LibC extends Library {
     int read(int fd, byte[] buffer, int count);
 
     int write(int fd, byte[] buffer, int count);
+
+    static int errno() {
+        return Native.getLastError();
+    }
 }
