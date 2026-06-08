@@ -29,6 +29,8 @@ public class Server {
     private final BlockingQueue<byte[]> toClient = new ArrayBlockingQueue<>(4096);
     private final AtomicLong httpToTunCounter = new AtomicLong();
     private final AtomicLong tunToHttpCounter = new AtomicLong();
+    private final AtomicLong queuedToClientCounter = new AtomicLong();
+    private final AtomicLong rxReturnedCounter = new AtomicLong();
 
     @Value("${vpn.tun.enabled:true}")
     private boolean tunEnabled;
@@ -85,7 +87,7 @@ public class Server {
 
         byte[] icmpReply = buildIcmpEchoReplyIfGatewayPing(packet);
         if (icmpReply != null) {
-            offerToClient(icmpReply);
+            offerToClient(icmpReply, "icmp-reply");
             return ResponseEntity.noContent().build();
         }
 
@@ -93,7 +95,7 @@ public class Server {
             tunDevice.writePacket(packet);
             logEvery(httpToTunCounter, "http -> tun", packet);
         } else {
-            offerToClient(("ECHO_FROM_SERVER: " + printable(packet)).getBytes(StandardCharsets.UTF_8));
+            offerToClient(("ECHO_FROM_SERVER: " + printable(packet)).getBytes(StandardCharsets.UTF_8), "test-echo");
         }
 
         return ResponseEntity.noContent().build();
@@ -104,9 +106,12 @@ public class Server {
         byte[] packet = toClient.poll(25, TimeUnit.SECONDS);
 
         if (packet == null) {
+            System.out.println("HTTP RX 204 no packet");
             return ResponseEntity.noContent().build();
         }
 
+        long value = rxReturnedCounter.incrementAndGet();
+        System.out.println("HTTP RX 200 #" + value + " " + packet.length + " bytes " + printable(packet));
         return ResponseEntity.ok(packet);
     }
 
@@ -118,7 +123,7 @@ public class Server {
                     continue;
                 }
 
-                offerToClient(packet);
+                offerToClient(packet, "tun-read");
                 logEvery(tunToHttpCounter, "tun -> http", packet);
 
             } catch (Exception e) {
@@ -127,11 +132,13 @@ public class Server {
         }
     }
 
-    private void offerToClient(byte[] packet) {
+    private void offerToClient(byte[] packet, String reason) {
         if (!toClient.offer(packet)) {
             toClient.poll();
             toClient.offer(packet);
         }
+        long value = queuedToClientCounter.incrementAndGet();
+        System.out.println("QUEUE TO CLIENT #" + value + " reason=" + reason + " size=" + toClient.size() + " " + packet.length + " bytes " + printable(packet));
     }
 
     private byte[] buildIcmpEchoReplyIfGatewayPing(byte[] packet) {
