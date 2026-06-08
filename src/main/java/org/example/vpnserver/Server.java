@@ -31,7 +31,8 @@ public class Server {
     private static final int ICMP_ECHO_REPLY = 0;
 
     private final TunDevice tunDevice;
-    private final BlockingQueue<byte[]> toClient = new ArrayBlockingQueue<>(4096);
+    private final BlockingQueue<byte[]> priorityToClient = new ArrayBlockingQueue<>(1024);
+    private final BlockingQueue<byte[]> normalToClient = new ArrayBlockingQueue<>(4096);
     private final AtomicLong httpToTunCounter = new AtomicLong();
     private final AtomicLong tunToHttpCounter = new AtomicLong();
     private final AtomicLong queuedToClientCounter = new AtomicLong();
@@ -92,7 +93,7 @@ public class Server {
 
         byte[] icmpReply = buildIcmpEchoReplyIfGatewayPing(packet);
         if (icmpReply != null) {
-            offerToClient(icmpReply, "icmp-reply");
+            offer(priorityToClient, icmpReply, "priority", "icmp-reply");
             return ResponseEntity.noContent().build();
         }
 
@@ -100,7 +101,7 @@ public class Server {
             tunDevice.writePacket(packet);
             logEvery(httpToTunCounter, "http -> tun", packet);
         } else {
-            offerToClient(("ECHO_FROM_SERVER: " + printable(packet)).getBytes(StandardCharsets.UTF_8), "test-echo");
+            offer(normalToClient, ("ECHO_FROM_SERVER: " + printable(packet)).getBytes(StandardCharsets.UTF_8), "normal", "test-echo");
         }
 
         return ResponseEntity.noContent().build();
@@ -108,7 +109,10 @@ public class Server {
 
     @GetMapping(value = "/rx", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public ResponseEntity<byte[]> rx() throws InterruptedException {
-        byte[] packet = toClient.poll(25, TimeUnit.SECONDS);
+        byte[] packet = priorityToClient.poll();
+        if (packet == null) {
+            packet = normalToClient.poll(25, TimeUnit.SECONDS);
+        }
 
         if (packet == null) {
             System.out.println("HTTP RX 204 no packet");
@@ -124,11 +128,11 @@ public class Server {
         while (true) {
             try {
                 byte[] packet = tunDevice.readPacket();
-                if (packet == null) {
+                if (packet == null || !isIpv4Packet(packet)) {
                     continue;
                 }
 
-                offerToClient(packet, "tun-read");
+                offer(normalToClient, packet, "normal", "tun-read");
                 logEvery(tunToHttpCounter, "tun -> http", packet);
 
             } catch (Exception e) {
@@ -137,13 +141,13 @@ public class Server {
         }
     }
 
-    private void offerToClient(byte[] packet, String reason) {
-        if (!toClient.offer(packet)) {
-            toClient.poll();
-            toClient.offer(packet);
+    private void offer(BlockingQueue<byte[]> queue, byte[] packet, String queueName, String reason) {
+        if (!queue.offer(packet)) {
+            queue.poll();
+            queue.offer(packet);
         }
         long value = queuedToClientCounter.incrementAndGet();
-        System.out.println("QUEUE TO CLIENT #" + value + " reason=" + reason + " size=" + toClient.size() + " " + packet.length + " bytes " + printable(packet));
+        System.out.println("QUEUE TO CLIENT #" + value + " queue=" + queueName + " reason=" + reason + " size=" + queue.size() + " " + packet.length + " bytes " + printable(packet));
     }
 
     private byte[] buildIcmpEchoReplyIfGatewayPing(byte[] request) {
@@ -180,27 +184,22 @@ public class Server {
 
         byte[] reply = Arrays.copyOf(request, totalLength);
 
-        // Меняем местами source/destination IP.
         for (int i = 0; i < 4; i++) {
             reply[12 + i] = request[16 + i];
             reply[16 + i] = request[12 + i];
         }
 
-        // Собираем IPv4 header checksum заново.
         reply[8] = 64;
         reply[10] = 0;
         reply[11] = 0;
-        int ipChecksum = checksum(reply, 0, ihl);
-        putU16(reply, 10, ipChecksum);
+        putU16(reply, 10, checksum(reply, 0, ihl));
 
-        // Меняем ICMP Echo Request на Echo Reply и пересчитываем ICMP checksum по ICMP payload.
         reply[icmpOffset] = ICMP_ECHO_REPLY;
         reply[icmpOffset + 1] = 0;
         reply[icmpOffset + 2] = 0;
         reply[icmpOffset + 3] = 0;
         int icmpLength = totalLength - ihl;
-        int icmpChecksum = checksum(reply, icmpOffset, icmpLength);
-        putU16(reply, icmpOffset + 2, icmpChecksum);
+        putU16(reply, icmpOffset + 2, checksum(reply, icmpOffset, icmpLength));
 
         int verifyIp = checksum(reply, 0, ihl);
         int verifyIcmp = checksum(reply, icmpOffset, icmpLength);
@@ -208,6 +207,10 @@ public class Server {
                 + " ipChecksumOk=" + (verifyIp == 0)
                 + " icmpChecksumOk=" + (verifyIcmp == 0));
         return reply;
+    }
+
+    private boolean isIpv4Packet(byte[] packet) {
+        return packet.length >= IPV4_HEADER_MIN_LENGTH && ((packet[0] >> 4) & 0x0f) == 4;
     }
 
     private int u16(byte[] data, int offset) {
