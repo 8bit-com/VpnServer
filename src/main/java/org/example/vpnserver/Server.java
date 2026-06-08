@@ -62,10 +62,13 @@ public class Server {
 
     private void handleTcpClient(Socket socket) {
 
+        DataOutputStream currentOut = null;
+
         try (socket;
              DataInputStream in = new DataInputStream(socket.getInputStream());
              DataOutputStream out = new DataOutputStream(socket.getOutputStream())) {
 
+            currentOut = out;
             activeClientOut.set(out);
 
             while (true) {
@@ -89,12 +92,10 @@ public class Server {
         } catch (Exception e) {
             System.out.println("tcp client disconnected: " + socket.getRemoteSocketAddress() + " error=" + e.getMessage());
         } finally {
-            activeClientOut.compareAndSet(getOutputStream(socket), null);
+            if (currentOut != null) {
+                activeClientOut.compareAndSet(currentOut, null);
+            }
         }
-    }
-
-    private DataOutputStream getOutputStream(Socket socket) {
-        return null;
     }
 
     private void readTunAndSendToTcp() {
