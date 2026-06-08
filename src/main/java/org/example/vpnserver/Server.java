@@ -12,6 +12,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +29,9 @@ public class Server {
     private final BlockingQueue<byte[]> toClient = new ArrayBlockingQueue<>(4096);
     private final AtomicLong httpToTunCounter = new AtomicLong();
     private final AtomicLong tunToHttpCounter = new AtomicLong();
+
+    @Value("${vpn.tun.enabled:true}")
+    private boolean tunEnabled;
 
     @Value("${vpn.tun.name:tun-http}")
     private String tunName;
@@ -49,6 +54,11 @@ public class Server {
 
     @EventListener(ApplicationReadyEvent.class)
     public void run() throws Exception {
+        if (!tunEnabled) {
+            System.out.println("HTTP VPN SERVER READY WITHOUT TUN");
+            return;
+        }
+
         runCommandIgnoreError("ip", "link", "delete", tunName);
         tunDevice.open(tunName);
         configureLinuxVpnNetwork();
@@ -71,8 +81,15 @@ public class Server {
             return ResponseEntity.badRequest().build();
         }
 
-        tunDevice.writePacket(packet);
-        logEvery(httpToTunCounter, "http -> tun", packet);
+        System.out.println("HTTP TX " + packet.length + " bytes " + printable(packet));
+
+        if (tunEnabled) {
+            tunDevice.writePacket(packet);
+            logEvery(httpToTunCounter, "http -> tun", packet);
+        } else {
+            toClient.offer(("ECHO_FROM_SERVER: " + printable(packet)).getBytes(StandardCharsets.UTF_8));
+        }
+
         return ResponseEntity.noContent().build();
     }
 
@@ -170,6 +187,17 @@ public class Server {
         }
 
         System.out.println(direction + " packets=" + value + " last=" + data.length + " bytes " + PacketInfo.info(data));
+    }
+
+    private String printable(byte[] data) {
+        boolean text = Arrays.stream(new String(data, StandardCharsets.UTF_8).chars().toArray())
+                .allMatch(ch -> ch == '\r' || ch == '\n' || ch == '\t' || ch >= 32);
+
+        if (text) {
+            return new String(data, StandardCharsets.UTF_8);
+        }
+
+        return PacketInfo.info(data);
     }
 
     private void runCommand(String... command) throws Exception {
