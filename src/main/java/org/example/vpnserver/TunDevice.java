@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Service
@@ -13,7 +14,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class TunDevice {
 
     private static final int O_RDWR = 2;
-    private static final int LOG_EVERY_PACKETS = 1;
+    private static final int LOG_EVERY_PACKETS = 100;
     private static final short IFF_TUN = 0x0001;
     private static final short IFF_NO_PI = 0x1000;
     private static final long TUNSETIFF = 0x400454caL;
@@ -43,14 +44,18 @@ public class TunDevice {
 
         int written = LibC.INSTANCE.write(fd, data, data.length);
 
-        if (written < 0) {
-            throw new RuntimeException("tun write failed");
+        if (written != data.length) {
+            throw new RuntimeException("tun write failed, written=" + written + ", expected=" + data.length + ", errno=" + LibC.errno());
         }
     }
 
     private int openTun() {
 
         int fd = LibC.INSTANCE.open("/dev/net/tun", O_RDWR);
+
+        if (fd < 0) {
+            throw new RuntimeException("open /dev/net/tun failed, errno=" + LibC.errno());
+        }
 
         IfReq ifr = new IfReq();
 
@@ -63,7 +68,7 @@ public class TunDevice {
         int result = LibC.INSTANCE.ioctl(fd, TUNSETIFF, ifr);
 
         if (result < 0) {
-            throw new RuntimeException("ioctl failed");
+            throw new RuntimeException("ioctl TUNSETIFF failed, errno=" + LibC.errno());
         }
 
         return fd;
@@ -75,24 +80,24 @@ public class TunDevice {
 
         while (true) {
 
-            int len = LibC.INSTANCE.read(fd, buffer, buffer.length);
+            try {
+                int len = LibC.INSTANCE.read(fd, buffer, buffer.length);
 
-            if (len <= 0) {
-                continue;
-            }
-
-            for (InetSocketAddress peer : udpPeers.getAll()) {
-
-                try {
-
-                    socket.send(new DatagramPacket(buffer, len, peer.getAddress(), peer.getPort()));
-
-                } catch (Exception e) {
-                    e.printStackTrace();
+                if (len <= 0) {
+                    continue;
                 }
-            }
 
-            logEvery(buffer, len);
+                byte[] packet = Arrays.copyOf(buffer, len);
+
+                for (InetSocketAddress peer : udpPeers.getAll()) {
+                    socket.send(new DatagramPacket(packet, packet.length, peer.getAddress(), peer.getPort()));
+                }
+
+                logEvery(packet, packet.length);
+
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }
     }
 
