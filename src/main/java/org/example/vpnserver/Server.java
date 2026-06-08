@@ -24,6 +24,11 @@ public class Server {
 
     private static final int MAX_PACKET_SIZE = 65535;
     private static final int LOG_EVERY_PACKETS = 100;
+    private static final int IPV4_HEADER_MIN_LENGTH = 20;
+    private static final int ICMP_HEADER_LENGTH = 8;
+    private static final int ICMP_PROTOCOL = 1;
+    private static final int ICMP_ECHO_REQUEST = 8;
+    private static final int ICMP_ECHO_REPLY = 0;
 
     private final TunDevice tunDevice;
     private final BlockingQueue<byte[]> toClient = new ArrayBlockingQueue<>(4096);
@@ -141,52 +146,77 @@ public class Server {
         System.out.println("QUEUE TO CLIENT #" + value + " reason=" + reason + " size=" + toClient.size() + " " + packet.length + " bytes " + printable(packet));
     }
 
-    private byte[] buildIcmpEchoReplyIfGatewayPing(byte[] packet) {
-        if (packet.length < 28) {
+    private byte[] buildIcmpEchoReplyIfGatewayPing(byte[] request) {
+        if (request.length < IPV4_HEADER_MIN_LENGTH + ICMP_HEADER_LENGTH) {
             return null;
         }
-        int version = (packet[0] >> 4) & 0x0f;
-        int ihl = (packet[0] & 0x0f) * 4;
-        if (version != 4 || ihl < 20 || packet.length < ihl + 8) {
+
+        int version = (request[0] >> 4) & 0x0f;
+        int ihl = (request[0] & 0x0f) * 4;
+        if (version != 4 || ihl < IPV4_HEADER_MIN_LENGTH || request.length < ihl + ICMP_HEADER_LENGTH) {
             return null;
         }
-        int protocol = packet[9] & 0xff;
-        if (protocol != 1) {
+
+        int totalLength = u16(request, 2);
+        if (totalLength < ihl + ICMP_HEADER_LENGTH || totalLength > request.length) {
             return null;
         }
-        String dst = ip(packet, 16);
+
+        int protocol = request[9] & 0xff;
+        if (protocol != ICMP_PROTOCOL) {
+            return null;
+        }
+
+        String dst = ip(request, 16);
         if (!gatewayIp().equals(dst)) {
             return null;
         }
+
         int icmpOffset = ihl;
-        int icmpType = packet[icmpOffset] & 0xff;
-        if (icmpType != 8) {
+        int icmpType = request[icmpOffset] & 0xff;
+        if (icmpType != ICMP_ECHO_REQUEST) {
             return null;
         }
 
-        byte[] reply = Arrays.copyOf(packet, packet.length);
+        byte[] reply = Arrays.copyOf(request, totalLength);
 
+        // Меняем местами source/destination IP.
         for (int i = 0; i < 4; i++) {
-            reply[12 + i] = packet[16 + i];
-            reply[16 + i] = packet[12 + i];
+            reply[12 + i] = request[16 + i];
+            reply[16 + i] = request[12 + i];
         }
 
+        // Собираем IPv4 header checksum заново.
         reply[8] = 64;
         reply[10] = 0;
         reply[11] = 0;
         int ipChecksum = checksum(reply, 0, ihl);
-        reply[10] = (byte) (ipChecksum >> 8);
-        reply[11] = (byte) ipChecksum;
+        putU16(reply, 10, ipChecksum);
 
-        reply[icmpOffset] = 0;
+        // Меняем ICMP Echo Request на Echo Reply и пересчитываем ICMP checksum по ICMP payload.
+        reply[icmpOffset] = ICMP_ECHO_REPLY;
+        reply[icmpOffset + 1] = 0;
         reply[icmpOffset + 2] = 0;
         reply[icmpOffset + 3] = 0;
-        int icmpChecksum = checksum(reply, icmpOffset, reply.length - icmpOffset);
-        reply[icmpOffset + 2] = (byte) (icmpChecksum >> 8);
-        reply[icmpOffset + 3] = (byte) icmpChecksum;
+        int icmpLength = totalLength - ihl;
+        int icmpChecksum = checksum(reply, icmpOffset, icmpLength);
+        putU16(reply, icmpOffset + 2, icmpChecksum);
 
-        System.out.println("ICMP ECHO REPLY " + ip(reply, 12) + " -> " + ip(reply, 16));
+        int verifyIp = checksum(reply, 0, ihl);
+        int verifyIcmp = checksum(reply, icmpOffset, icmpLength);
+        System.out.println("ICMP ECHO REPLY " + ip(reply, 12) + " -> " + ip(reply, 16)
+                + " ipChecksumOk=" + (verifyIp == 0)
+                + " icmpChecksumOk=" + (verifyIcmp == 0));
         return reply;
+    }
+
+    private int u16(byte[] data, int offset) {
+        return ((data[offset] & 0xff) << 8) | (data[offset + 1] & 0xff);
+    }
+
+    private void putU16(byte[] data, int offset, int value) {
+        data[offset] = (byte) ((value >> 8) & 0xff);
+        data[offset + 1] = (byte) (value & 0xff);
     }
 
     private int checksum(byte[] data, int offset, int length) {
