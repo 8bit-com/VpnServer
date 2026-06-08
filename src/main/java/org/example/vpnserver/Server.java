@@ -1,130 +1,106 @@
 package org.example.vpnserver;
 
-import lombok.RequiredArgsConstructor;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.context.event.EventListener;
-import org.springframework.stereotype.Service;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.io.BufferedReader;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.InputStreamReader;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.util.Arrays;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 
-@Service
-@RequiredArgsConstructor
+@RestController
 public class Server {
 
-    private static final int PORT = 51888;
-    private static final int LOG_EVERY_PACKETS = 1;
-    private static final int MTU = 1200;
-    private static final int TCP_MSS = 1160;
-    private static final String TUN_NAME = "tun0";
-    private static final String TUN_IP = "10.0.0.1/24";
-    private static final String VPN_NETWORK = "10.0.0.0/24";
     private static final int MAX_PACKET_SIZE = 65535;
+    private static final int LOG_EVERY_PACKETS = 100;
 
-    private final AtomicLong tcpToTunCounter = new AtomicLong();
-    private final AtomicLong tunToTcpCounter = new AtomicLong();
-    private final AtomicReference<DataOutputStream> activeClientOut = new AtomicReference<>();
     private final TunDevice tunDevice;
+    private final BlockingQueue<byte[]> toClient = new ArrayBlockingQueue<>(4096);
+    private final AtomicLong httpToTunCounter = new AtomicLong();
+    private final AtomicLong tunToHttpCounter = new AtomicLong();
+
+    @Value("${vpn.tun.name:tun-http}")
+    private String tunName;
+
+    @Value("${vpn.tun.address:10.8.0.1/24}")
+    private String tunAddress;
+
+    @Value("${vpn.network:10.8.0.0/24}")
+    private String vpnNetwork;
+
+    @Value("${vpn.mtu:1400}")
+    private int mtu;
+
+    @Value("${vpn.probe-ip:1.1.1.1}")
+    private String probeIp;
+
+    public Server(TunDevice tunDevice) {
+        this.tunDevice = tunDevice;
+    }
 
     @EventListener(ApplicationReadyEvent.class)
     public void run() throws Exception {
-
-        tunDevice.open();
+        runCommandIgnoreError("ip", "link", "delete", tunName);
+        tunDevice.open(tunName);
         configureLinuxVpnNetwork();
 
-        new Thread(this::readTunAndSendToTcp, "tun-to-tcp").start();
-        listenTcpClients();
+        Thread thread = new Thread(this::readTunAndQueueHttp, "tun-to-http");
+        thread.setDaemon(true);
+        thread.start();
+
+        System.out.println("HTTP VPN SERVER READY");
     }
 
-    private void listenTcpClients() throws Exception {
+    @GetMapping("/health")
+    public String health() {
+        return "ok\n";
+    }
 
-        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
-            System.out.println("TCP VPN SERVER LISTENING ON PORT " + PORT);
-
-            while (true) {
-                Socket socket = serverSocket.accept();
-                socket.setTcpNoDelay(true);
-                socket.setKeepAlive(true);
-
-                System.out.println("tcp client connected: " + socket.getRemoteSocketAddress());
-
-                new Thread(() -> handleTcpClient(socket), "tcp-client").start();
-            }
+    @PostMapping(value = "/tx", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<Void> tx(@RequestBody byte[] packet) {
+        if (packet.length == 0 || packet.length > MAX_PACKET_SIZE) {
+            return ResponseEntity.badRequest().build();
         }
+
+        tunDevice.writePacket(packet);
+        logEvery(httpToTunCounter, "http -> tun", packet);
+        return ResponseEntity.noContent().build();
     }
 
-    private void handleTcpClient(Socket socket) {
+    @GetMapping(value = "/rx", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<byte[]> rx() throws InterruptedException {
+        byte[] packet = toClient.poll(25, TimeUnit.SECONDS);
 
-        DataOutputStream currentOut = null;
-
-        try (socket;
-             DataInputStream in = new DataInputStream(socket.getInputStream());
-             DataOutputStream out = new DataOutputStream(socket.getOutputStream())) {
-
-            currentOut = out;
-            activeClientOut.set(out);
-
-            while (true) {
-                int len = in.readInt();
-
-                if (len <= 0 || len > MAX_PACKET_SIZE) {
-                    throw new RuntimeException("bad tcp frame length: " + len);
-                }
-
-                byte[] data = in.readNBytes(len);
-
-                if (data.length != len) {
-                    throw new RuntimeException("tcp frame truncated: " + data.length + "/" + len);
-                }
-
-                tunDevice.writePacket(tunDevice.getFd(), data);
-
-                logEvery(tcpToTunCounter, "tcp -> tun", data);
-            }
-
-        } catch (Exception e) {
-            System.out.println("tcp client disconnected: " + socket.getRemoteSocketAddress() + " error=" + e.getMessage());
-        } finally {
-            if (currentOut != null) {
-                activeClientOut.compareAndSet(currentOut, null);
-            }
+        if (packet == null) {
+            return ResponseEntity.noContent().build();
         }
+
+        return ResponseEntity.ok(packet);
     }
 
-    private void readTunAndSendToTcp() {
-
-        byte[] buffer = new byte[MAX_PACKET_SIZE];
-
+    private void readTunAndQueueHttp() {
         while (true) {
             try {
-                int len = LibC.INSTANCE.read(tunDevice.getFd(), buffer, buffer.length);
-
-                if (len <= 0) {
+                byte[] packet = tunDevice.readPacket();
+                if (packet == null) {
                     continue;
                 }
 
-                byte[] data = Arrays.copyOf(buffer, len);
-
-                DataOutputStream out = activeClientOut.get();
-
-                if (out == null) {
-                    continue;
+                if (!toClient.offer(packet)) {
+                    toClient.poll();
+                    toClient.offer(packet);
                 }
 
-                synchronized (out) {
-                    out.writeInt(data.length);
-                    out.write(data);
-                    out.flush();
-                }
-
-                logEvery(tunToTcpCounter, "tun -> tcp", data);
+                logEvery(tunToHttpCounter, "tun -> http", packet);
 
             } catch (Exception e) {
                 e.printStackTrace();
@@ -136,39 +112,37 @@ public class Server {
 
         String externalInterface = getExternalInterface();
 
-        runCommand("ip", "addr", "flush", "dev", TUN_NAME);
-        runCommand("ip", "addr", "add", TUN_IP, "dev", TUN_NAME);
-        runCommand("ip", "link", "set", "dev", TUN_NAME, "mtu", String.valueOf(MTU));
-        runCommand("ip", "link", "set", TUN_NAME, "up");
+        runCommand("ip", "addr", "flush", "dev", tunName);
+        runCommand("ip", "addr", "add", tunAddress, "dev", tunName);
+        runCommand("ip", "link", "set", "dev", tunName, "mtu", String.valueOf(mtu));
+        runCommand("ip", "link", "set", tunName, "up");
 
         runCommand("sysctl", "-w", "net.ipv4.ip_forward=1");
 
-        deleteForwardRules(externalInterface);
-        addForwardRules(externalInterface);
+        ensureIptables("-t", "nat", "-A", "POSTROUTING", "-s", vpnNetwork, "-o", externalInterface, "-j", "MASQUERADE");
+        ensureIptables("-A", "FORWARD", "-i", tunName, "-o", externalInterface, "-j", "ACCEPT");
+        ensureIptables("-A", "FORWARD", "-i", externalInterface, "-o", tunName, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT");
 
-        runCommandIgnoreError("iptables", "-t", "nat", "-D", "POSTROUTING", "-s", VPN_NETWORK, "-o", externalInterface, "-j", "MASQUERADE");
-        runCommand("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", VPN_NETWORK, "-o", externalInterface, "-j", "MASQUERADE");
-
-        System.out.println("LINUX VPN NETWORK CONFIGURED: " + TUN_NAME + " " + TUN_IP + ", MTU " + MTU + ", MSS " + TCP_MSS + ", NAT via " + externalInterface);
+        System.out.println("LINUX VPN NETWORK CONFIGURED: " + tunName + " " + tunAddress + ", MTU " + mtu + ", NAT via " + externalInterface);
     }
 
-    private void deleteForwardRules(String externalInterface) {
+    private void ensureIptables(String... rule) throws Exception {
+        String[] checkRule = rule.clone();
+        for (int i = 0; i < checkRule.length; i++) {
+            if ("-A".equals(checkRule[i])) {
+                checkRule[i] = "-C";
+                break;
+            }
+        }
 
-        runCommandIgnoreError("iptables", "-D", "FORWARD", "-i", TUN_NAME, "-o", externalInterface, "-j", "ACCEPT");
-        runCommandIgnoreError("iptables", "-D", "FORWARD", "-i", externalInterface, "-o", TUN_NAME, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT");
-        runCommandIgnoreError("iptables", "-t", "mangle", "-D", "FORWARD", "-i", TUN_NAME, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--set-mss", String.valueOf(TCP_MSS));
-    }
-
-    private void addForwardRules(String externalInterface) throws Exception {
-
-        runCommand("iptables", "-A", "FORWARD", "-i", TUN_NAME, "-o", externalInterface, "-j", "ACCEPT");
-        runCommand("iptables", "-A", "FORWARD", "-i", externalInterface, "-o", TUN_NAME, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT");
-        runCommand("iptables", "-t", "mangle", "-A", "FORWARD", "-i", TUN_NAME, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--set-mss", String.valueOf(TCP_MSS));
+        if (runCommandStatus(prepend("iptables", checkRule)) != 0) {
+            runCommand(prepend("iptables", rule));
+        }
     }
 
     private String getExternalInterface() throws Exception {
 
-        Process process = new ProcessBuilder("sh", "-c", "ip route get 8.8.8.8 | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p' | head -n 1")
+        Process process = new ProcessBuilder("sh", "-c", "ip route get " + probeIp + " | sed -n 's/.* dev \\([^ ]*\\).*/\\1/p' | head -n 1")
                 .redirectErrorStream(true)
                 .start();
 
@@ -209,6 +183,11 @@ public class Server {
         }
     }
 
+    private int runCommandStatus(String... command) throws Exception {
+        Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
+        return process.waitFor();
+    }
+
     private void runCommandIgnoreError(String... command) {
 
         try {
@@ -216,5 +195,12 @@ public class Server {
             process.waitFor();
         } catch (Exception ignored) {
         }
+    }
+
+    private String[] prepend(String first, String[] rest) {
+        String[] result = new String[rest.length + 1];
+        result[0] = first;
+        System.arraycopy(rest, 0, result, 1, rest.length);
+        return result;
     }
 }

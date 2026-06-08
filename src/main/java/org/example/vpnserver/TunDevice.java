@@ -1,47 +1,39 @@
 package org.example.vpnserver;
 
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Service;
+import org.springframework.stereotype.Component;
 
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
-import java.net.InetSocketAddress;
 import java.util.Arrays;
-import java.util.concurrent.atomic.AtomicLong;
 
-@Service
-@RequiredArgsConstructor
+@Component
 public class TunDevice {
 
     private static final int O_RDWR = 2;
-    private static final int LOG_EVERY_PACKETS = 100;
     private static final short IFF_TUN = 0x0001;
     private static final short IFF_NO_PI = 0x1000;
     private static final long TUNSETIFF = 0x400454caL;
+    private static final int MAX_PACKET_SIZE = 65535;
 
     private int fd;
-    private final AtomicLong tunToClientCounter = new AtomicLong();
-    private final UdpPeers udpPeers;
 
-    public void start(DatagramSocket socket) {
-
-        open();
-        readPackets(socket);
-    }
-
-    public void open() {
-
-        fd = openTun();
-
-        System.out.println("tun0 opened");
+    public void open(String tunName) {
+        fd = openTun(tunName);
+        System.out.println(tunName + " opened");
     }
 
     public int getFd() {
         return fd;
     }
 
-    public void writePacket(int fd, byte[] data) {
+    public byte[] readPacket() {
+        byte[] buffer = new byte[MAX_PACKET_SIZE];
+        int len = LibC.INSTANCE.read(fd, buffer, buffer.length);
+        if (len <= 0) {
+            return null;
+        }
+        return Arrays.copyOf(buffer, len);
+    }
 
+    public void writePacket(byte[] data) {
         int written = LibC.INSTANCE.write(fd, data, data.length);
 
         if (written != data.length) {
@@ -49,8 +41,7 @@ public class TunDevice {
         }
     }
 
-    private int openTun() {
-
+    private int openTun(String tunName) {
         int fd = LibC.INSTANCE.open("/dev/net/tun", O_RDWR);
 
         if (fd < 0) {
@@ -59,7 +50,8 @@ public class TunDevice {
 
         IfReq ifr = new IfReq();
 
-        System.arraycopy("tun0".getBytes(), 0, ifr.ifr_name, 0, 4);
+        byte[] nameBytes = tunName.getBytes();
+        System.arraycopy(nameBytes, 0, ifr.ifr_name, 0, Math.min(nameBytes.length, ifr.ifr_name.length));
 
         ifr.ifr_flags = (short) (IFF_TUN | IFF_NO_PI);
 
@@ -72,43 +64,5 @@ public class TunDevice {
         }
 
         return fd;
-    }
-
-    public void readPackets(DatagramSocket socket) {
-
-        byte[] buffer = new byte[65535];
-
-        while (true) {
-
-            try {
-                int len = LibC.INSTANCE.read(fd, buffer, buffer.length);
-
-                if (len <= 0) {
-                    continue;
-                }
-
-                byte[] packet = Arrays.copyOf(buffer, len);
-
-                for (InetSocketAddress peer : udpPeers.getAll()) {
-                    socket.send(new DatagramPacket(packet, packet.length, peer.getAddress(), peer.getPort()));
-                }
-
-                logEvery(packet, packet.length);
-
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
-    }
-
-    private void logEvery(byte[] data, int len) {
-
-        long value = tunToClientCounter.incrementAndGet();
-
-        if (value % LOG_EVERY_PACKETS != 0) {
-            return;
-        }
-
-        System.out.println("tun -> client packets=" + value + " last=" + len + " bytes " + PacketInfo.info(data, len));
     }
 }
