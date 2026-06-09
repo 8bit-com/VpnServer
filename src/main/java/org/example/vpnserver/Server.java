@@ -124,6 +124,28 @@ public class Server {
         return ResponseEntity.ok(packet);
     }
 
+    @PostMapping(
+            value = "/packet",
+            consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE,
+            produces = MediaType.APPLICATION_OCTET_STREAM_VALUE
+    )
+    public ResponseEntity<byte[]> packet(@RequestBody byte[] packet) {
+
+        if (packet.length == 0 || packet.length > MAX_PACKET_SIZE) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        System.out.println("HTTP PACKET " + packet.length + " bytes " + printable(packet));
+
+        byte[] icmpReply = buildIcmpEchoReplyIfGatewayPing(packet);
+
+        if (icmpReply != null) {
+            return ResponseEntity.ok(icmpReply);
+        }
+
+        return ResponseEntity.noContent().build();
+    }
+
     private void readTunAndQueueHttp() {
         while (true) {
             try {
