@@ -26,7 +26,7 @@ public class Server {
     private static final int ICMP_PROTOCOL = 1;
     private static final int ICMP_ECHO_REQUEST = 8;
     private static final int ICMP_ECHO_REPLY = 0;
-    private static final long RX_TIMEOUT_MS = 30000;
+    private static final long RX_TIMEOUT_MS = 115000;
 
     private final TunDevice tunDevice;
     private final BlockingQueue<byte[]> priorityToClient = new ArrayBlockingQueue<>(4096);
