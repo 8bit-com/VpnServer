@@ -29,8 +29,8 @@ public class Server {
     private static final long RX_TIMEOUT_MS = 30000;
 
     private final TunDevice tunDevice;
-    private final BlockingQueue<byte[]> priorityToClient = new ArrayBlockingQueue<>(1024);
-    private final BlockingQueue<byte[]> normalToClient = new ArrayBlockingQueue<>(8192);
+    private final BlockingQueue<byte[]> priorityToClient = new ArrayBlockingQueue<>(4096);
+    private final BlockingQueue<byte[]> normalToClient = new ArrayBlockingQueue<>(65536);
     private final AtomicLong httpToTunCounter = new AtomicLong();
     private final AtomicLong tunToHttpCounter = new AtomicLong();
     private final AtomicLong queuedToClientCounter = new AtomicLong();
@@ -162,13 +162,22 @@ public class Server {
                     continue;
                 }
 
-                offer(normalToClient, packet, "normal", "tun-read");
+                if (isIcmpPacket(packet)) {
+                    offer(priorityToClient, packet, "priority", "tun-icmp");
+                } else {
+                    offer(normalToClient, packet, "normal", "tun-read");
+                }
+
                 logEvery(tunToHttpCounter, "tun -> http", packet);
 
             } catch (Exception e) {
                 e.printStackTrace();
             }
         }
+    }
+
+    private boolean isIcmpPacket(byte[] packet) {
+        return isIpv4Packet(packet) && (packet[9] & 0xff) == ICMP_PROTOCOL;
     }
 
     private void offer(BlockingQueue<byte[]> queue, byte[] packet, String queueName, String reason) {
