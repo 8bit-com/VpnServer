@@ -89,7 +89,7 @@ public class Server {
             return ResponseEntity.badRequest().build();
         }
 
-        System.out.println("HTTP TX " + packet.length + " bytes " + printable(packet));
+        System.out.println("HTTP TX " + packet.length);
 
         byte[] icmpReply = buildIcmpEchoReplyIfGatewayPing(packet);
         if (icmpReply != null) {
@@ -120,7 +120,7 @@ public class Server {
         }
 
         long value = rxReturnedCounter.incrementAndGet();
-        System.out.println("HTTP RX 200 #" + value + " " + packet.length + " bytes " + printable(packet));
+        System.out.println("HTTP RX 200 #" + value + " " + packet.length);
         return ResponseEntity.ok(packet);
     }
 
@@ -135,7 +135,7 @@ public class Server {
             return ResponseEntity.badRequest().build();
         }
 
-        System.out.println("HTTP PACKET " + packet.length + " bytes " + printable(packet));
+        System.out.println("HTTP PACKET " + packet.length);
 
         byte[] icmpReply = buildIcmpEchoReplyIfGatewayPing(packet);
 
@@ -169,7 +169,7 @@ public class Server {
             queue.offer(packet);
         }
         long value = queuedToClientCounter.incrementAndGet();
-        System.out.println("QUEUE TO CLIENT #" + value + " queue=" + queueName + " reason=" + reason + " size=" + queue.size() + " " + packet.length + " bytes " + printable(packet));
+        System.out.println("QUEUE TO CLIENT #" + value + " queue=" + queueName + " reason=" + reason + " size=" + queue.size() + " " + packet.length);
     }
 
     private byte[] buildIcmpEchoReplyIfGatewayPing(byte[] request) {
