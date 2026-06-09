@@ -5,10 +5,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.context.event.EventListener;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -112,20 +109,20 @@ public class Server {
             consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE,
             produces = MediaType.APPLICATION_OCTET_STREAM_VALUE
     )
-    public ResponseEntity<byte[]> packet(@RequestBody byte[] packet) {
-
-        if (packet.length == 0 || packet.length > MAX_PACKET_SIZE) {
-            return ResponseEntity.badRequest().build();
-        }
-
-        System.out.println("HTTP PACKET " + packet.length);
+    public ResponseEntity<byte[]> packet(
+            @RequestParam long id,
+            @RequestBody byte[] packet
+    ) {
+        System.out.println("HTTP PACKET id=" + id + " len=" + packet.length);
 
         byte[] icmpReply = buildIcmpEchoReplyIfGatewayPing(packet);
 
         if (icmpReply != null) {
+            System.out.println("HTTP REPLY id=" + id + " len=" + icmpReply.length);
             return ResponseEntity.ok(icmpReply);
         }
 
+        System.out.println("HTTP NO REPLY id=" + id);
         return ResponseEntity.noContent().build();
     }
 
