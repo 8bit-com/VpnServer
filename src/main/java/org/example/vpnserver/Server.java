@@ -111,7 +111,7 @@ public class Server {
     public ResponseEntity<byte[]> rx() throws InterruptedException {
         byte[] packet = priorityToClient.poll();
         if (packet == null) {
-            packet = normalToClient.poll(100, TimeUnit.MILLISECONDS);
+            packet = normalToClient.poll(5, TimeUnit.SECONDS);
         }
 
         if (packet == null) {
