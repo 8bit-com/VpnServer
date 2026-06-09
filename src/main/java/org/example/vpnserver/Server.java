@@ -26,11 +26,11 @@ public class Server {
     private static final int ICMP_PROTOCOL = 1;
     private static final int ICMP_ECHO_REQUEST = 8;
     private static final int ICMP_ECHO_REPLY = 0;
-    private static final long TUN_RESPONSE_TIMEOUT_MS = 3000;
+    private static final long RX_TIMEOUT_MS = 30000;
 
     private final TunDevice tunDevice;
     private final BlockingQueue<byte[]> priorityToClient = new ArrayBlockingQueue<>(1024);
-    private final BlockingQueue<byte[]> normalToClient = new ArrayBlockingQueue<>(4096);
+    private final BlockingQueue<byte[]> normalToClient = new ArrayBlockingQueue<>(8192);
     private final AtomicLong httpToTunCounter = new AtomicLong();
     private final AtomicLong tunToHttpCounter = new AtomicLong();
     private final AtomicLong queuedToClientCounter = new AtomicLong();
@@ -83,15 +83,13 @@ public class Server {
 
     @PostMapping(value = "/tx", consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE)
     public ResponseEntity<Void> tx(@RequestBody byte[] packet) {
-        if (packet.length == 0 || packet.length > MAX_PACKET_SIZE) {
+        if (packet.length == 0 || packet.length > MAX_PACKET_SIZE || !isIpv4Packet(packet)) {
             return ResponseEntity.badRequest().build();
         }
 
-        System.out.println("HTTP TX " + packet.length);
-
         byte[] icmpReply = buildIcmpEchoReplyIfGatewayPing(packet);
         if (icmpReply != null) {
-            offer(priorityToClient, icmpReply, "priority", "icmp-reply");
+            offer(priorityToClient, icmpReply, "priority", "gateway-ping");
             return ResponseEntity.noContent().build();
         }
 
@@ -103,6 +101,31 @@ public class Server {
         }
 
         return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping(value = "/rx", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<byte[]> rx() {
+        try {
+            byte[] packet = priorityToClient.poll();
+            if (packet == null) {
+                packet = normalToClient.poll(RX_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            }
+
+            if (packet == null) {
+                return ResponseEntity.noContent().build();
+            }
+
+            long value = rxReturnedCounter.incrementAndGet();
+            if (value % LOG_EVERY_PACKETS == 0) {
+                System.out.println("rx -> client packets=" + value + " last=" + packet.length + " bytes " + PacketInfo.info(packet));
+            }
+
+            return ResponseEntity.ok(packet);
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return ResponseEntity.noContent().build();
+        }
     }
 
     @PostMapping(
@@ -119,31 +142,16 @@ public class Server {
         }
 
         byte[] icmpReply = buildIcmpEchoReplyIfGatewayPing(packet);
-
         if (icmpReply != null) {
-            System.out.println("HTTP LOCAL REPLY id=" + id + " len=" + icmpReply.length);
             return ResponseEntity.ok(icmpReply);
         }
 
-        if (!tunEnabled) {
-            System.out.println("HTTP NO TUN id=" + id);
-            return ResponseEntity.noContent().build();
+        if (tunEnabled) {
+            tunDevice.writePacket(packet);
+            logEvery(httpToTunCounter, "http -> tun", packet);
         }
 
-        drainStaleTunPackets();
-
-        tunDevice.writePacket(packet);
-        logEvery(httpToTunCounter, "http -> tun", packet);
-
-        byte[] response = waitTunResponseFor(packet, TUN_RESPONSE_TIMEOUT_MS);
-
-        if (response == null) {
-            System.out.println("HTTP TUN TIMEOUT id=" + id + " " + PacketInfo.info(packet));
-            return ResponseEntity.noContent().build();
-        }
-
-        System.out.println("HTTP TUN REPLY id=" + id + " len=" + response.length + " " + PacketInfo.info(response));
-        return ResponseEntity.ok(response);
+        return ResponseEntity.noContent().build();
     }
 
     private void readTunAndQueueHttp() {
@@ -163,101 +171,15 @@ public class Server {
         }
     }
 
-    private byte[] waitTunResponseFor(byte[] request, long timeoutMs) {
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
-
-        while (System.nanoTime() < deadline) {
-            long leftMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
-            if (leftMs <= 0) {
-                break;
-            }
-
-            try {
-                byte[] response = normalToClient.poll(leftMs, TimeUnit.MILLISECONDS);
-                if (response == null) {
-                    return null;
-                }
-
-                if (isResponseFor(request, response)) {
-                    return response;
-                }
-
-                System.out.println("DROP UNMATCHED TUN RESPONSE " + PacketInfo.info(response));
-
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return null;
-            }
-        }
-
-        return null;
-    }
-
-    private boolean isResponseFor(byte[] request, byte[] response) {
-        if (!isIpv4Packet(request) || !isIpv4Packet(response)) {
-            return false;
-        }
-
-        int requestProtocol = request[9] & 0xff;
-        int responseProtocol = response[9] & 0xff;
-
-        if (requestProtocol != responseProtocol) {
-            return false;
-        }
-
-        String requestSrc = ip(request, 12);
-        String requestDst = ip(request, 16);
-        String responseSrc = ip(response, 12);
-        String responseDst = ip(response, 16);
-
-        if (!requestDst.equals(responseSrc) || !requestSrc.equals(responseDst)) {
-            return false;
-        }
-
-        if (requestProtocol == ICMP_PROTOCOL) {
-            return isIcmpResponseFor(request, response);
-        }
-
-        return true;
-    }
-
-    private boolean isIcmpResponseFor(byte[] request, byte[] response) {
-        int requestIhl = (request[0] & 0x0f) * 4;
-        int responseIhl = (response[0] & 0x0f) * 4;
-
-        if (request.length < requestIhl + ICMP_HEADER_LENGTH || response.length < responseIhl + ICMP_HEADER_LENGTH) {
-            return false;
-        }
-
-        int requestType = request[requestIhl] & 0xff;
-        int responseType = response[responseIhl] & 0xff;
-
-        if (requestType == ICMP_ECHO_REQUEST && responseType != ICMP_ECHO_REPLY) {
-            return false;
-        }
-
-        int requestId = u16(request, requestIhl + 4);
-        int requestSeq = u16(request, requestIhl + 6);
-        int responseId = u16(response, responseIhl + 4);
-        int responseSeq = u16(response, responseIhl + 6);
-
-        return requestId == responseId && requestSeq == responseSeq;
-    }
-
-    private void drainStaleTunPackets() {
-        byte[] stale;
-        while ((stale = normalToClient.poll()) != null) {
-            System.out.println("DROP STALE TUN RESPONSE " + PacketInfo.info(stale));
-        }
-    }
-
     private void offer(BlockingQueue<byte[]> queue, byte[] packet, String queueName, String reason) {
         if (!queue.offer(packet)) {
             queue.poll();
             queue.offer(packet);
         }
         long value = queuedToClientCounter.incrementAndGet();
-        System.out.println("QUEUE TO CLIENT #" + value + " queue=" + queueName + " reason=" + reason + " size=" + queue.size() + " " + packet.length);
+        if (value % LOG_EVERY_PACKETS == 0) {
+            System.out.println("queue -> client packets=" + value + " queue=" + queueName + " reason=" + reason + " size=" + queue.size() + " last=" + packet.length + " bytes " + PacketInfo.info(packet));
+        }
     }
 
     private byte[] buildIcmpEchoReplyIfGatewayPing(byte[] request) {
@@ -311,11 +233,6 @@ public class Server {
         int icmpLength = totalLength - ihl;
         putU16(reply, icmpOffset + 2, checksum(reply, icmpOffset, icmpLength));
 
-        int verifyIp = checksum(reply, 0, ihl);
-        int verifyIcmp = checksum(reply, icmpOffset, icmpLength);
-        System.out.println("ICMP ECHO REPLY " + ip(reply, 12) + " -> " + ip(reply, 16)
-                + " ipChecksumOk=" + (verifyIp == 0)
-                + " icmpChecksumOk=" + (verifyIcmp == 0));
         return reply;
     }
 
