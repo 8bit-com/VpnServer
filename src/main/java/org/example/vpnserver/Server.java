@@ -48,7 +48,7 @@ public class Server {
     @Value("${vpn.network:10.8.0.0/24}")
     private String vpnNetwork;
 
-    @Value("${vpn.mtu:1200}")
+    @Value("${vpn.mtu:1500}")
     private int mtu;
 
     @Value("${vpn.probe-ip:1.1.1.1}")
