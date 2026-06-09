@@ -107,23 +107,6 @@ public class Server {
         return ResponseEntity.noContent().build();
     }
 
-    @GetMapping(value = "/rx", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
-    public ResponseEntity<byte[]> rx() throws InterruptedException {
-        byte[] packet = priorityToClient.poll();
-        if (packet == null) {
-            packet = normalToClient.poll(5, TimeUnit.SECONDS);
-        }
-
-        if (packet == null) {
-            System.out.println("HTTP RX 204 no packet");
-            return ResponseEntity.noContent().build();
-        }
-
-        long value = rxReturnedCounter.incrementAndGet();
-        System.out.println("HTTP RX 200 #" + value + " " + packet.length);
-        return ResponseEntity.ok(packet);
-    }
-
     @PostMapping(
             value = "/packet",
             consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE,
