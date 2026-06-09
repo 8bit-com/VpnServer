@@ -26,6 +26,7 @@ public class Server {
     private static final int ICMP_PROTOCOL = 1;
     private static final int ICMP_ECHO_REQUEST = 8;
     private static final int ICMP_ECHO_REPLY = 0;
+    private static final long TUN_RESPONSE_TIMEOUT_MS = 3000;
 
     private final TunDevice tunDevice;
     private final BlockingQueue<byte[]> priorityToClient = new ArrayBlockingQueue<>(1024);
@@ -113,17 +114,36 @@ public class Server {
             @RequestParam long id,
             @RequestBody byte[] packet
     ) {
-        System.out.println("HTTP PACKET id=" + id + " len=" + packet.length);
+        if (packet.length == 0 || packet.length > MAX_PACKET_SIZE || !isIpv4Packet(packet)) {
+            return ResponseEntity.badRequest().build();
+        }
 
         byte[] icmpReply = buildIcmpEchoReplyIfGatewayPing(packet);
 
         if (icmpReply != null) {
-            System.out.println("HTTP REPLY id=" + id + " len=" + icmpReply.length);
+            System.out.println("HTTP LOCAL REPLY id=" + id + " len=" + icmpReply.length);
             return ResponseEntity.ok(icmpReply);
         }
 
-        System.out.println("HTTP NO REPLY id=" + id);
-        return ResponseEntity.noContent().build();
+        if (!tunEnabled) {
+            System.out.println("HTTP NO TUN id=" + id);
+            return ResponseEntity.noContent().build();
+        }
+
+        drainStaleTunPackets();
+
+        tunDevice.writePacket(packet);
+        logEvery(httpToTunCounter, "http -> tun", packet);
+
+        byte[] response = waitTunResponseFor(packet, TUN_RESPONSE_TIMEOUT_MS);
+
+        if (response == null) {
+            System.out.println("HTTP TUN TIMEOUT id=" + id + " " + PacketInfo.info(packet));
+            return ResponseEntity.noContent().build();
+        }
+
+        System.out.println("HTTP TUN REPLY id=" + id + " len=" + response.length + " " + PacketInfo.info(response));
+        return ResponseEntity.ok(response);
     }
 
     private void readTunAndQueueHttp() {
@@ -140,6 +160,94 @@ public class Server {
             } catch (Exception e) {
                 e.printStackTrace();
             }
+        }
+    }
+
+    private byte[] waitTunResponseFor(byte[] request, long timeoutMs) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+
+        while (System.nanoTime() < deadline) {
+            long leftMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+            if (leftMs <= 0) {
+                break;
+            }
+
+            try {
+                byte[] response = normalToClient.poll(leftMs, TimeUnit.MILLISECONDS);
+                if (response == null) {
+                    return null;
+                }
+
+                if (isResponseFor(request, response)) {
+                    return response;
+                }
+
+                System.out.println("DROP UNMATCHED TUN RESPONSE " + PacketInfo.info(response));
+
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private boolean isResponseFor(byte[] request, byte[] response) {
+        if (!isIpv4Packet(request) || !isIpv4Packet(response)) {
+            return false;
+        }
+
+        int requestProtocol = request[9] & 0xff;
+        int responseProtocol = response[9] & 0xff;
+
+        if (requestProtocol != responseProtocol) {
+            return false;
+        }
+
+        String requestSrc = ip(request, 12);
+        String requestDst = ip(request, 16);
+        String responseSrc = ip(response, 12);
+        String responseDst = ip(response, 16);
+
+        if (!requestDst.equals(responseSrc) || !requestSrc.equals(responseDst)) {
+            return false;
+        }
+
+        if (requestProtocol == ICMP_PROTOCOL) {
+            return isIcmpResponseFor(request, response);
+        }
+
+        return true;
+    }
+
+    private boolean isIcmpResponseFor(byte[] request, byte[] response) {
+        int requestIhl = (request[0] & 0x0f) * 4;
+        int responseIhl = (response[0] & 0x0f) * 4;
+
+        if (request.length < requestIhl + ICMP_HEADER_LENGTH || response.length < responseIhl + ICMP_HEADER_LENGTH) {
+            return false;
+        }
+
+        int requestType = request[requestIhl] & 0xff;
+        int responseType = response[responseIhl] & 0xff;
+
+        if (requestType == ICMP_ECHO_REQUEST && responseType != ICMP_ECHO_REPLY) {
+            return false;
+        }
+
+        int requestId = u16(request, requestIhl + 4);
+        int requestSeq = u16(request, requestIhl + 6);
+        int responseId = u16(response, responseIhl + 4);
+        int responseSeq = u16(response, responseIhl + 6);
+
+        return requestId == responseId && requestSeq == responseSeq;
+    }
+
+    private void drainStaleTunPackets() {
+        byte[] stale;
+        while ((stale = normalToClient.poll()) != null) {
+            System.out.println("DROP STALE TUN RESPONSE " + PacketInfo.info(stale));
         }
     }
 
