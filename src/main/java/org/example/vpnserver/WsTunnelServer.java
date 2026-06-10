@@ -71,7 +71,7 @@ public class WsTunnelServer {
                 byte[] packet = new byte[message.remaining()];
                 message.get(packet);
 
-                if (!isIpv4(packet) || packet.length > MAX_PACKET_SIZE || !shouldTunnel(packet)) {
+                if (!isIpPacket(packet) || packet.length > MAX_PACKET_SIZE || !shouldTunnel(packet)) {
                     logDrop("WS -> TUN drop", packet);
                     return;
                 }
@@ -105,7 +105,7 @@ public class WsTunnelServer {
         while (true) {
             try {
                 byte[] packet = tunDevice.readPacket();
-                if (!isIpv4(packet) || packet.length > MAX_PACKET_SIZE || !shouldTunnel(packet)) {
+                if (!isIpPacket(packet) || packet.length > MAX_PACKET_SIZE || !shouldTunnel(packet)) {
                     logDrop("TUN -> WS drop", packet);
                     continue;
                 }
@@ -125,15 +125,19 @@ public class WsTunnelServer {
     }
 
     private boolean shouldTunnel(byte[] packet) {
+        if (isIpv6(packet)) {
+            return true;
+        }
+
         int src0 = packet[12] & 0xff;
         int src1 = packet[13] & 0xff;
         int dst0 = packet[16] & 0xff;
         int dst1 = packet[17] & 0xff;
 
-        return isAllowedIp(src0, src1) && isAllowedIp(dst0, dst1);
+        return isAllowedIpv4(src0, src1) && isAllowedIpv4(dst0, dst1);
     }
 
-    private boolean isAllowedIp(int b0, int b1) {
+    private boolean isAllowedIpv4(int b0, int b1) {
         if (b0 == 0 || b0 == 127 || b0 >= 224) {
             return false;
         }
@@ -154,26 +158,66 @@ public class WsTunnelServer {
         if (id <= LOG_FIRST_PACKETS || id % LOG_EVERY_PACKETS == 0) {
             if (packet == null) {
                 System.out.println(direction + " id=" + id + " null");
-            } else if (isIpv4(packet)) {
+            } else if (isIpPacket(packet)) {
                 System.out.println(direction + " id=" + id + " len=" + packet.length + " " + ipInfo(packet));
             } else {
-                System.out.println(direction + " id=" + id + " len=" + packet.length + " non-ipv4");
+                System.out.println(direction + " id=" + id + " len=" + packet.length + " non-ip first=" + firstBytes(packet));
             }
         }
+    }
+
+    private boolean isIpPacket(byte[] packet) {
+        return isIpv4(packet) || isIpv6(packet);
     }
 
     private boolean isIpv4(byte[] packet) {
         return packet != null && packet.length >= 20 && ((packet[0] >> 4) & 0x0f) == 4;
     }
 
-    private String ipInfo(byte[] packet) {
-        return ip(packet, 12) + " -> " + ip(packet, 16) + " proto=" + (packet[9] & 0xff);
+    private boolean isIpv6(byte[] packet) {
+        return packet != null && packet.length >= 40 && ((packet[0] >> 4) & 0x0f) == 6;
     }
 
-    private String ip(byte[] data, int offset) {
+    private String ipInfo(byte[] packet) {
+        if (isIpv4(packet)) {
+            return ipv4(packet, 12) + " -> " + ipv4(packet, 16) + " proto=" + (packet[9] & 0xff);
+        }
+
+        if (isIpv6(packet)) {
+            return ipv6(packet, 8) + " -> " + ipv6(packet, 24) + " nextHeader=" + (packet[6] & 0xff);
+        }
+
+        return "non-ip len=" + (packet == null ? 0 : packet.length);
+    }
+
+    private String ipv4(byte[] data, int offset) {
         return (data[offset] & 0xff) + "." +
                 (data[offset + 1] & 0xff) + "." +
                 (data[offset + 2] & 0xff) + "." +
                 (data[offset + 3] & 0xff);
+    }
+
+    private String ipv6(byte[] data, int offset) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 16; i += 2) {
+            if (i > 0) {
+                sb.append(':');
+            }
+            int value = ((data[offset + i] & 0xff) << 8) | (data[offset + i + 1] & 0xff);
+            sb.append(Integer.toHexString(value));
+        }
+        return sb.toString();
+    }
+
+    private String firstBytes(byte[] data) {
+        StringBuilder sb = new StringBuilder();
+        int len = Math.min(data.length, 16);
+        for (int i = 0; i < len; i++) {
+            if (i > 0) {
+                sb.append(' ');
+            }
+            sb.append(String.format("%02x", data[i] & 0xff));
+        }
+        return sb.toString();
     }
 }
