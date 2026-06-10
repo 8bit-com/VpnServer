@@ -4,12 +4,11 @@ import org.java_websocket.WebSocket;
 import org.java_websocket.handshake.ClientHandshake;
 import org.java_websocket.server.WebSocketServer;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 @Component
@@ -19,6 +18,7 @@ public class WsTunnelServer {
 
     private final TunDevice tunDevice;
     private final AtomicReference<WebSocket> client = new AtomicReference<>();
+    private final AtomicBoolean started = new AtomicBoolean(false);
 
     @Value("${vpn.ws.enabled:true}")
     private boolean enabled;
@@ -30,9 +30,12 @@ public class WsTunnelServer {
         this.tunDevice = tunDevice;
     }
 
-    @EventListener(ApplicationReadyEvent.class)
+    public boolean isEnabled() {
+        return enabled;
+    }
+
     public void start() {
-        if (!enabled) {
+        if (!enabled || !started.compareAndSet(false, true)) {
             return;
         }
 
