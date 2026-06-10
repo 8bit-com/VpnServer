@@ -39,6 +39,9 @@ public class Server {
     @Value("${vpn.tun.enabled:true}")
     private boolean tunEnabled;
 
+    @Value("${vpn.ws.enabled:true}")
+    private boolean wsEnabled;
+
     @Value("${vpn.tun.name:tun-http}")
     private String tunName;
 
@@ -61,7 +64,7 @@ public class Server {
     @EventListener(ApplicationReadyEvent.class)
     public void run() throws Exception {
         if (!tunEnabled) {
-            System.out.println("HTTP VPN SERVER READY WITHOUT TUN");
+            System.out.println("VPN SERVER READY WITHOUT TUN");
             return;
         }
 
@@ -69,11 +72,13 @@ public class Server {
         tunDevice.open(tunName);
         configureLinuxVpnNetwork();
 
-        Thread thread = new Thread(this::readTunAndQueueHttp, "tun-to-http");
-        thread.setDaemon(true);
-        thread.start();
+        if (!wsEnabled) {
+            Thread thread = new Thread(this::readTunAndQueueHttp, "tun-to-http");
+            thread.setDaemon(true);
+            thread.start();
+        }
 
-        System.out.println("HTTP VPN SERVER READY");
+        System.out.println("VPN SERVER READY");
     }
 
     @GetMapping("/health")
@@ -355,32 +360,10 @@ public class Server {
     }
 
     private String ip(byte[] data, int offset) {
-        return (data[offset] & 0xff) + "." + (data[offset + 1] & 0xff) + "." + (data[offset + 2] & 0xff) + "." + (data[offset + 3] & 0xff);
-    }
-
-    private void runCommand(String... command) throws Exception {
-
-        Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
-
-        int code = process.waitFor();
-
-        if (code != 0) {
-            throw new RuntimeException("Command failed, code=" + code + ", command=" + String.join(" ", command));
-        }
-    }
-
-    private int runCommandStatus(String... command) throws Exception {
-        Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
-        return process.waitFor();
-    }
-
-    private void runCommandIgnoreError(String... command) {
-
-        try {
-            Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
-            process.waitFor();
-        } catch (Exception ignored) {
-        }
+        return (data[offset] & 0xff) + "." +
+                (data[offset + 1] & 0xff) + "." +
+                (data[offset + 2] & 0xff) + "." +
+                (data[offset + 3] & 0xff);
     }
 
     private String[] prepend(String first, String[] rest) {
@@ -388,5 +371,36 @@ public class Server {
         result[0] = first;
         System.arraycopy(rest, 0, result, 1, rest.length);
         return result;
+    }
+
+    private void runCommand(String... command) throws Exception {
+        int code = runCommandStatus(command);
+        if (code != 0) {
+            throw new RuntimeException("Command failed: " + String.join(" ", command));
+        }
+    }
+
+    private int runCommandStatus(String... command) throws Exception {
+        System.out.println("RUN: " + String.join(" ", command));
+
+        Process process = new ProcessBuilder(command)
+                .redirectErrorStream(true)
+                .start();
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                System.out.println(line);
+            }
+        }
+
+        return process.waitFor();
+    }
+
+    private void runCommandIgnoreError(String... command) {
+        try {
+            runCommand(command);
+        } catch (Exception ignored) {
+        }
     }
 }
