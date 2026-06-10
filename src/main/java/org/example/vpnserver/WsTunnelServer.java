@@ -16,7 +16,6 @@ import java.util.concurrent.atomic.AtomicReference;
 public class WsTunnelServer {
 
     private static final int MAX_PACKET_SIZE = 65535;
-    private static final int MAX_BUFFERED_AMOUNT = 2 * 1024 * 1024;
     private static final long LOG_FIRST_PACKETS = 30;
     private static final long LOG_EVERY_PACKETS = 500;
 
@@ -110,14 +109,6 @@ public class WsTunnelServer {
 
                 WebSocket conn = client.get();
                 if (conn == null || !conn.isOpen()) {
-                    continue;
-                }
-
-                while (conn.isOpen() && conn.getBufferedAmount() > MAX_BUFFERED_AMOUNT) {
-                    Thread.sleep(2);
-                }
-
-                if (!conn.isOpen()) {
                     continue;
                 }
 
