@@ -8,6 +8,9 @@ import org.springframework.stereotype.Component;
 
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -16,6 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class WsTunnelServer {
 
     private static final int MAX_PACKET_SIZE = 65535;
+    private static final int OUTBOUND_QUEUE_SIZE = 8192;
     private static final long LOG_FIRST_PACKETS = 30;
     private static final long LOG_EVERY_PACKETS = 500;
 
@@ -25,6 +29,7 @@ public class WsTunnelServer {
     private final AtomicLong wsToTunCounter = new AtomicLong();
     private final AtomicLong tunToWsCounter = new AtomicLong();
     private final AtomicLong dropCounter = new AtomicLong();
+    private final BlockingQueue<byte[]> outboundQueue = new ArrayBlockingQueue<>(OUTBOUND_QUEUE_SIZE);
 
     @Value("${vpn.ws.enabled:true}")
     private boolean enabled;
@@ -48,6 +53,7 @@ public class WsTunnelServer {
         WebSocketServer server = new WebSocketServer(new InetSocketAddress("0.0.0.0", port)) {
             @Override
             public void onOpen(WebSocket conn, ClientHandshake handshake) {
+                outboundQueue.clear();
                 client.set(conn);
                 System.out.println("WS client connected: " + conn.getRemoteSocketAddress());
             }
@@ -55,6 +61,7 @@ public class WsTunnelServer {
             @Override
             public void onClose(WebSocket conn, int code, String reason, boolean remote) {
                 client.compareAndSet(conn, null);
+                outboundQueue.clear();
                 System.out.println("WS client closed: code=" + code + " remote=" + remote + " reason=" + reason);
             }
 
@@ -99,6 +106,10 @@ public class WsTunnelServer {
         Thread tunReader = new Thread(this::tunToWs, "tun-to-ws");
         tunReader.setDaemon(true);
         tunReader.start();
+
+        Thread wsSender = new Thread(this::wsSenderLoop, "ws-sender");
+        wsSender.setDaemon(true);
+        wsSender.start();
     }
 
     private void tunToWs() {
@@ -117,9 +128,43 @@ public class WsTunnelServer {
 
                 long id = tunToWsCounter.incrementAndGet();
                 logPacket("TUN -> WS", id, packet);
-                conn.send(packet);
+
+                if (!outboundQueue.offer(packet)) {
+                    long dropId = dropCounter.incrementAndGet();
+                    if (dropId <= LOG_FIRST_PACKETS || dropId % LOG_EVERY_PACKETS == 0) {
+                        System.out.println("TUN -> WS drop queue-full id=" + dropId + " len=" + packet.length + " " + ipInfo(packet));
+                    }
+                }
             } catch (Exception e) {
                 System.out.println("tun-to-ws error: " + e.getClass().getName() + ": " + e.getMessage());
+            }
+        }
+    }
+
+    private void wsSenderLoop() {
+        while (true) {
+            try {
+                byte[] packet = outboundQueue.poll(100, TimeUnit.MILLISECONDS);
+                if (packet == null) {
+                    continue;
+                }
+
+                WebSocket conn = client.get();
+                if (conn == null || !conn.isOpen()) {
+                    continue;
+                }
+
+                while (conn.isOpen() && conn.hasBufferedData()) {
+                    Thread.sleep(1);
+                }
+
+                if (!conn.isOpen()) {
+                    continue;
+                }
+
+                conn.send(packet);
+            } catch (Exception e) {
+                System.out.println("ws-sender error: " + e.getClass().getName() + ": " + e.getMessage());
             }
         }
     }
