@@ -88,10 +88,12 @@ public class WsTunnelServer {
 
             @Override
             public void onStart() {
-                System.out.println("WS VPN SERVER READY ON PORT " + port);
+                setConnectionLostTimeout(0);
+                System.out.println("WS VPN SERVER READY ON PORT " + port + " connectionLostTimeout=0");
             }
         };
 
+        server.setConnectionLostTimeout(0);
         server.start();
 
         Thread tunReader = new Thread(this::tunToWs, "tun-to-ws");
