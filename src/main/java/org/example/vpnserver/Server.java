@@ -29,6 +29,7 @@ public class Server {
     private static final long RX_TIMEOUT_MS = 115000;
 
     private final TunDevice tunDevice;
+    private final WsTunnelServer wsTunnelServer;
     private final BlockingQueue<byte[]> priorityToClient = new ArrayBlockingQueue<>(4096);
     private final BlockingQueue<byte[]> normalToClient = new ArrayBlockingQueue<>(65536);
     private final AtomicLong httpToTunCounter = new AtomicLong();
@@ -38,9 +39,6 @@ public class Server {
 
     @Value("${vpn.tun.enabled:true}")
     private boolean tunEnabled;
-
-    @Value("${vpn.ws.enabled:true}")
-    private boolean wsEnabled;
 
     @Value("${vpn.tun.name:tun-http}")
     private String tunName;
@@ -57,8 +55,9 @@ public class Server {
     @Value("${vpn.probe-ip:1.1.1.1}")
     private String probeIp;
 
-    public Server(TunDevice tunDevice) {
+    public Server(TunDevice tunDevice, WsTunnelServer wsTunnelServer) {
         this.tunDevice = tunDevice;
+        this.wsTunnelServer = wsTunnelServer;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -72,7 +71,9 @@ public class Server {
         tunDevice.open(tunName);
         configureLinuxVpnNetwork();
 
-        if (!wsEnabled) {
+        if (wsTunnelServer.isEnabled()) {
+            wsTunnelServer.start();
+        } else {
             Thread thread = new Thread(this::readTunAndQueueHttp, "tun-to-http");
             thread.setDaemon(true);
             thread.start();
