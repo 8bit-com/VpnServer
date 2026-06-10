@@ -48,10 +48,7 @@ public class WsTunnelServer {
         WebSocketServer server = new WebSocketServer(new InetSocketAddress("0.0.0.0", port)) {
             @Override
             public void onOpen(WebSocket conn, ClientHandshake handshake) {
-                WebSocket old = client.getAndSet(conn);
-                if (old != null && old.isOpen()) {
-                    old.close();
-                }
+                client.set(conn);
                 System.out.println("WS client connected: " + conn.getRemoteSocketAddress());
             }
 
@@ -67,6 +64,10 @@ public class WsTunnelServer {
 
             @Override
             public void onMessage(WebSocket conn, ByteBuffer message) {
+                if (client.get() != conn) {
+                    return;
+                }
+
                 byte[] packet = new byte[message.remaining()];
                 message.get(packet);
 
