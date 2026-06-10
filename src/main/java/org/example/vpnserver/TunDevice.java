@@ -13,9 +13,9 @@ public class TunDevice {
     private static final long TUNSETIFF = 0x400454caL;
     private static final int MAX_PACKET_SIZE = 65535;
 
-    private int fd;
+    private int fd = -1;
 
-    public void open(String tunName) {
+    public synchronized void open(String tunName) {
         fd = openTun(tunName);
         System.out.println(tunName + " opened");
     }
@@ -25,6 +25,8 @@ public class TunDevice {
     }
 
     public byte[] readPacket() {
+        ensureOpen();
+
         byte[] buffer = new byte[MAX_PACKET_SIZE];
         int len = LibC.INSTANCE.read(fd, buffer, buffer.length);
         if (len <= 0) {
@@ -34,10 +36,18 @@ public class TunDevice {
     }
 
     public void writePacket(byte[] data) {
+        ensureOpen();
+
         int written = LibC.INSTANCE.write(fd, data, data.length);
 
         if (written != data.length) {
             throw new RuntimeException("tun write failed, written=" + written + ", expected=" + data.length + ", errno=" + LibC.errno());
+        }
+    }
+
+    private void ensureOpen() {
+        if (fd < 0) {
+            throw new IllegalStateException("TUN is not open");
         }
     }
 
